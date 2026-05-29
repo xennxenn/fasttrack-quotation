@@ -1,0 +1,6 @@
+{
+  "name": "Fast Track Quotation",
+  "description": "ระบบใบเสนอราคาผ้าม่านและอุปกรณ์เสริมสเปกจริง คำนวณรวดเร็ว ถูกต้อง แม่นยำ",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
