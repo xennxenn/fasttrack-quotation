@@ -32,7 +32,7 @@ export const LoginScreen = ({ onLogin, staffList }: LoginScreenProps) => {
                         <label className="block text-xs font-bold text-gray-700 mb-1">รหัสพนักงาน</label>
                         <input 
                             className="w-full p-3 border rounded text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-500" 
-                            placeholder="รหัสพนักงาน (เช่น T58121)" 
+                            placeholder="รหัสพนักงาน" 
                             value={id} 
                             onChange={e => setId(e.target.value)}
                         />

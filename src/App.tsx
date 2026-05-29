@@ -649,13 +649,104 @@ export default function App() {
       return { totalBasePrice, totalItemDiscount, totalNetPrice, ontopAmount, finalNet };
   }, [activeItems, ontopPercent, excludedItemIds]);
 
+  const StyleBlock = () => (
+    <style dangerouslySetInnerHTML={{__html: `
+      :root {
+        --theme-main: ${theme.main || '#1e3a8a'};
+        --theme-action: ${theme.action || '#2563eb'};
+        --theme-success: ${theme.success || '#16a34a'};
+        --theme-bg: ${theme.bg || '#f9fafb'};
+      }
+      .theme-bg-app { background-color: var(--theme-bg) !important; }
+      .theme-bg-main { background-color: var(--theme-main) !important; }
+      .theme-text-main { color: var(--theme-main) !important; }
+      .theme-bg-action { background-color: var(--theme-action) !important; }
+      .theme-text-action { color: var(--theme-action) !important; }
+      .theme-bg-success { background-color: var(--theme-success) !important; }
+      .theme-bg-light { background-color: #f3f4f6; }
+      
+      /* Dynamic Theme Overrides for hardcoded blue colors */
+      .bg-blue-50, .bg-blue-50\\/50 {
+        background-color: color-mix(in srgb, var(--theme-main) 8%, white) !important;
+      }
+      .bg-blue-100 {
+        background-color: color-mix(in srgb, var(--theme-action) 12%, white) !important;
+      }
+      .bg-blue-600, .bg-blue-700, .bg-blue-750, .bg-blue-800 {
+        background-color: var(--theme-action) !important;
+      }
+      .text-blue-700, .text-blue-800, .text-blue-900 {
+        color: var(--theme-main) !important;
+      }
+      .text-blue-600, .theme-text-action {
+        color: var(--theme-action) !important;
+      }
+      .border-blue-100, .border-blue-500 {
+        border-color: color-mix(in srgb, var(--theme-main) 20%, white) !important;
+      }
+      .hover\\:bg-blue-50:hover {
+        background-color: color-mix(in srgb, var(--theme-action) 8%, white) !important;
+      }
+      .hover\\:bg-blue-200:hover {
+        background-color: color-mix(in srgb, var(--theme-action) 20%, white) !important;
+      }
+      .hover\\:bg-blue-700:hover, .hover\\:bg-blue-800:hover {
+        background-color: var(--theme-main) !important;
+      }
+      .std-input {
+        background-color: white !important;
+        border: 1px solid #d1d5db !important;
+        border-radius: 0.375rem !important;
+        padding: 0.75rem !important;
+        outline: none !important;
+        font-size: 0.875rem !important;
+        transition: all 0.2s !important;
+      }
+      .std-input:focus {
+        border-color: var(--theme-action) !important;
+        box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-action) 20%, transparent) !important;
+      }
+      .label {
+        display: block !important;
+        font-size: 0.75rem !important;
+        font-weight: 700 !important;
+        color: #374151 !important;
+        margin-bottom: 0.375rem !important;
+        margin-left: 0.25rem !important;
+      }
+      @media print {
+        .no-print { display: none !important; }
+        .print-only { display: block !important; }
+        body { background: white; font-size: 10pt; }
+        .print-table-wrapper { width: 100%; border-collapse: collapse; }
+        .print-header-group { display: table-header-group; }
+        .print-footer-group { display: table-footer-group; }
+        .print-table th { border-bottom: 2px solid black !important; padding: 4px; text-align: left; font-weight: bold; color: black; font-size: 10pt; }
+        .print-table td { border-bottom: 1px solid #eee !important; padding: 4px; color: black; font-size: 10pt; }
+        .page-break { page-break-inside: avoid; }
+        .draft-watermark {
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-45deg);
+            font-size: 150px; font-weight: bold; color: rgba(200, 200, 200, 0.5) !important; opacity: 1; pointer-events: none; z-index: 9999; display: block !important;
+        }
+        .print-container { width: 100%; }
+        @page { size: A4; margin: 10mm; @bottom-right { content: "หน้าที่ " counter(page) " / " counter(pages); font-size: 10px; color: #999; } }
+      }
+    `}} />
+  );
+
   if (appState === 'login') {
-      return <LoginScreen onLogin={handleLogin} staffList={staffList} />;
+      return (
+          <>
+              <StyleBlock />
+              <LoginScreen onLogin={handleLogin} staffList={staffList} />
+          </>
+      );
   }
   
   if (appState === 'dashboard') {
       return (
           <>
+              <StyleBlock />
               <Dashboard 
                   user={user} 
                   staff={staff as Staff} 
@@ -677,32 +768,19 @@ export default function App() {
   }
   
   if (appState === 'customer_form') {
-      return <CustomerForm customer={customer} setCustomer={setCustomer} onNext={handleStartQuote} onCancel={()=>setAppState('dashboard')} />;
+      return (
+          <>
+              <StyleBlock />
+              <CustomerForm customer={customer} setCustomer={setCustomer} onNext={handleStartQuote} onCancel={()=>setAppState('dashboard')} />
+          </>
+      );
   }
 
   const itemsInCurrentRoom = items.filter(i => i.houseName === selectedHouse && i.roomName === selectedRoom);
 
   return (
     <div className="min-h-screen bg-gray-50 font-sans text-gray-800 flex flex-col">
-      <style dangerouslySetInnerHTML={{__html: ` :root { --theme-main: ${theme.main}; --theme-action: ${theme.action}; --theme-success: ${theme.success}; --theme-bg: ${theme.bg}; } .theme-bg-app { background-color: var(--theme-bg) !important; } .theme-bg-main { background-color: var(--theme-main) !important; } .theme-text-main { color: var(--theme-main) !important; } .theme-bg-action { background-color: var(--theme-action) !important; } .theme-text-action { color: var(--theme-action) !important; } .theme-bg-success { background-color: var(--theme-success) !important; } .theme-bg-light { background-color: #f3f4f6; } .std-input { @apply bg-white border border-gray-300 rounded-md px-3 py-2 outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-all text-sm placeholder-gray-400 shadow-sm; } .label { @apply block text-xs font-bold text-gray-700 mb-1.5 ml-1; } 
-        @media print {
-            .no-print { display: none !important; }
-            .print-only { display: block !important; }
-            body { background: white; font-size: 10pt; }
-            .print-table-wrapper { width: 100%; border-collapse: collapse; }
-            .print-header-group { display: table-header-group; }
-            .print-footer-group { display: table-footer-group; }
-            .print-table th { border-bottom: 2px solid black !important; padding: 4px; text-align: left; font-weight: bold; color: black; font-size: 10pt; }
-            .print-table td { border-bottom: 1px solid #eee !important; padding: 4px; color: black; font-size: 10pt; }
-            .page-break { page-break-inside: avoid; }
-            .draft-watermark {
-                position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-45deg);
-                font-size: 150px; font-weight: bold; color: rgba(200, 200, 200, 0.5) !important; opacity: 1; pointer-events: none; z-index: 9999; display: block !important;
-            }
-            .print-container { width: 100%; }
-            @page { size: A4; margin: 10mm; @bottom-right { content: "หน้าที่ " counter(page) " / " counter(pages); font-size: 10px; color: #999; } }
-        }
-      `}} />
+      <StyleBlock />
 
       <nav className="sticky top-0 z-40 theme-bg-main text-white px-6 py-3 flex justify-between items-center shadow-md no-print">
          <div className="flex items-center gap-3">
