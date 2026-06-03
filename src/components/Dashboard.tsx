@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Plus, Trash2, Calculator, LogOut, Search, Users, Ruler, Palette, Database, Loader, Settings } from 'lucide-react';
-import { collection, deleteDoc, doc, query, onSnapshot, getFirestore, where } from 'firebase/firestore';
+import { collection, deleteDoc, doc, query, onSnapshot, getFirestore, where, orderBy, limit } from 'firebase/firestore';
 import { Staff } from '../types';
 import { Modal } from './Common';
 import { safeLocalStorageSetItem } from '../utils';
@@ -67,16 +67,23 @@ export const Dashboard = ({
         let unsubscribe = () => {};
 
         const setupListener = () => {
-            // Apply server-side query filtering if not an admin to retrieve only own quotations,
-            // which speeds up network performance and loading times dramatically on mobile!
+            // Under high volumes, querying the entire database causes extreme slowdowns on low-end mobiles.
+            // We use standard limit clauses which do not trigger secondary indexing failures on Firestore-side.
             let q;
             if (!isAdmin && staff?.id) {
+                // Fetch the 300 latest quotes owned by this staff member (safe, clean, doesn't need custom index)
                 q = query(
                     collection(firestore, 'artifacts', appId, 'public', 'data', 'quotations'),
-                    where('staffId', '==', staff.id)
+                    where('staffId', '==', staff.id),
+                    limit(300)
                 );
             } else {
-                q = query(collection(firestore, 'artifacts', appId, 'public', 'data', 'quotations'));
+                // Admins fetch the top 500 overall latest quotes sorted by newest (uses single-field updatedAt index)
+                q = query(
+                    collection(firestore, 'artifacts', appId, 'public', 'data', 'quotations'),
+                    orderBy('updatedAt', 'desc'),
+                    limit(500)
+                );
             }
 
             unsubscribe = onSnapshot(q, (snapshot) => {

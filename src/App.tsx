@@ -52,6 +52,62 @@ try {
 const appId = 'fast-track-quote';
 
 // --- Helper Functions ---
+function oklchToRgb(oklchStr: string): string {
+    const match = oklchStr.match(/oklch\(([\d.%]+)\s+([\d.%]+)\s+([\d.%]+)(?:\s*\/\s*([\d.%]+))?\)/i)
+               || oklchStr.match(/oklch\(([\d.%]+),\s*([\d.%]+),\s*([\d.%]+)(?:,\s*([\d.%]+))?\)/i);
+    if (!match) {
+        if (oklchStr.includes('0.2') || oklchStr.includes('20%')) return 'rgba(0,0,0,0.2)';
+        return '#000000';
+    }
+    
+    let L = parseFloat(match[1]);
+    if (match[1].includes('%')) L = parseFloat(match[1]) / 100;
+    
+    let C = parseFloat(match[2]);
+    if (match[2].includes('%')) C = parseFloat(match[2]) / 100;
+    
+    let H = parseFloat(match[3]);
+    
+    let A = 1;
+    if (match[4] !== undefined) {
+        A = parseFloat(match[4]);
+        if (match[4].includes('%')) A = parseFloat(match[4]) / 100;
+    }
+    
+    const hRad = (H * Math.PI) / 180;
+    const aMin = C * Math.cos(hRad);
+    const bMin = C * Math.sin(hRad);
+    
+    const l_ = L + 0.3963377774 * aMin + 0.2158037573 * bMin;
+    const m_ = L - 0.1055613458 * aMin - 0.0638541728 * bMin;
+    const s_ = L - 0.0894841775 * aMin - 1.2914855480 * bMin;
+    
+    const l = l_ * l_ * l_;
+    const m = m_ * m_ * m_;
+    const s = s_ * s_ * s_;
+    
+    let rLinear = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+    let gLinear = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+    let bLinear = -0.0041960863 * l - 0.7034185147 * m + 1.7076147010 * s;
+    
+    const compress = (x: number) => {
+        if (x <= 0.0031308) {
+            return Math.max(0, x * 12.92);
+        }
+        return Math.max(0, Math.min(1, 1.055 * Math.pow(x, 1 / 2.4) - 0.055));
+    };
+    
+    const r_val = Math.round(compress(rLinear) * 255);
+    const g_val = Math.round(compress(gLinear) * 255);
+    const b_val = Math.round(compress(bLinear) * 255);
+    
+    if (A === 1) {
+        return `rgb(${r_val}, ${g_val}, ${b_val})`;
+    } else {
+        return `rgba(${r_val}, ${g_val}, ${b_val}, ${A})`;
+    }
+}
+
 const formatDate = (timestamp: any) => {
     if (!timestamp) return '-';
     try {
@@ -496,69 +552,141 @@ export default function App() {
       }
   };
   
-  const handleSharePDF = async () => {
-    const element = document.getElementById('quotation-print-sheet');
-    if (!element) return;
+  const generatePDFBlob = async (): Promise<{ blob: Blob; filename: string } | null> => {
+    const pageElements = document.querySelectorAll('.printable-page-a4');
+    if (pageElements.length === 0) return null;
     
     setIsGeneratingPDF(true);
     
-    // Create a temporary off-screen container for crisp, complete desktop-width rendering (fixing mobile column truncation)
-    const printContainer = document.createElement('div');
-    printContainer.style.position = 'absolute';
-    printContainer.style.left = '-9999px';
-    printContainer.style.top = '0';
-    printContainer.style.width = '1000px';
-    printContainer.style.backgroundColor = '#ffffff';
-    
-    // Clone the real element to avoid affecting user's viewport
-    const clone = element.cloneNode(true) as HTMLElement;
-    clone.style.width = '1000px';
-    clone.style.maxWidth = 'none';
-    clone.style.overflow = 'visible';
-    clone.style.padding = '20px';
-    
-    // Permanently remove all no-print elements (like checkboxes, edits, delete buttons) from the captured tree
-    const noPrintElements = clone.querySelectorAll('.no-print');
-    noPrintElements.forEach(el => el.remove());
-    
-    printContainer.appendChild(clone);
-    document.body.appendChild(printContainer);
+    // 1. Temporary style overrides for `<style>` blocks in the document to prevent html2canvas OKLCH crash
+    const tempStyleOverrides: { element: HTMLStyleElement; originalText: string }[] = [];
+    document.querySelectorAll('style').forEach(styleEl => {
+        if (styleEl.innerHTML.includes('oklch')) {
+            tempStyleOverrides.push({
+                element: styleEl,
+                originalText: styleEl.innerHTML
+            });
+            try {
+                const parsedCSS = styleEl.innerHTML.replace(/oklch\([^)]+\)/gi, (match) => {
+                    try {
+                        return oklchToRgb(match);
+                    } catch {
+                        return '#000000';
+                    }
+                });
+                styleEl.innerHTML = parsedCSS;
+            } catch (styleErr) {
+                console.error("Temporary style replacement failed for theme block:", styleErr);
+            }
+        }
+    });
+
+    // 2. Intercept window.getComputedStyle to translate any lingering OKLCH style returns dynamically
+    const originalGetComputedStyle = window.getComputedStyle;
+    window.getComputedStyle = function (element, pseudoElt) {
+        const style = originalGetComputedStyle(element, pseudoElt);
+        return new Proxy(style, {
+            get(target, prop) {
+                if (prop === 'getPropertyValue') {
+                    return function (propertyName: string) {
+                        const val = style.getPropertyValue(propertyName);
+                        if (typeof val === 'string' && val.includes('oklch')) {
+                            try {
+                                return oklchToRgb(val);
+                            } catch {
+                                return 'rgb(0, 0, 0)';
+                            }
+                        }
+                        return val;
+                    };
+                }
+                const val = Reflect.get(target, prop);
+                if (typeof val === 'string' && val.includes('oklch')) {
+                    try {
+                        return oklchToRgb(val);
+                    } catch {
+                        return 'rgb(0, 0, 0)';
+                    }
+                }
+                if (typeof val === 'function') {
+                    return val.bind(target);
+                }
+                return val;
+            }
+        });
+    } as any;
     
     try {
-        const canvas = await html2canvas(clone, {
-            scale: 2,
-            useCORS: true,
-            scrollX: 0,
-            scrollY: 0,
-            windowWidth: 1000,
-            backgroundColor: '#ffffff'
-        });
-        
-        // Remove cloned DOM elements immediately
-        if (printContainer.parentNode) {
-            document.body.removeChild(printContainer);
-        }
-        
-        const imgData = canvas.toDataURL('image/jpeg', 0.95);
         const pdf = new jsPDF('p', 'mm', 'a4');
-        const imgWidth = 210; 
-        const pageHeight = 297; 
-        const imgHeight = (canvas.height * imgWidth) / canvas.width;
-        let heightLeft = imgHeight;
-        let position = 0;
         
-        pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
-        heightLeft -= pageHeight;
-        
-        while (heightLeft >= 0) {
-            position = heightLeft - imgHeight;
-            pdf.addPage();
-            pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
-            heightLeft -= pageHeight;
+        for (let i = 0; i < pageElements.length; i++) {
+            const pageEl = pageElements[i] as HTMLElement;
+            
+            const canvas = await html2canvas(pageEl, {
+                scale: 2,
+                useCORS: true,
+                backgroundColor: '#ffffff',
+                ignoreElements: (element) => {
+                    return element.classList.contains('no-print');
+                }
+            });
+            
+            if (canvas.width === 0 || canvas.height === 0) {
+                throw new Error("Canvas dimensions are zero");
+            }
+            
+            const imgData = canvas.toDataURL('image/jpeg', 0.95);
+            
+            if (i > 0) {
+                pdf.addPage();
+            }
+            // A4 page dimensions in millimetres
+            pdf.addImage(imgData, 'JPEG', 0, 0, 210, 297);
         }
         
         const blob = pdf.output('blob');
         const filename = `ใบเสนอราคา_คุณ${customer.name || 'ลูกค้า'}.pdf`;
+        return { blob, filename };
+    } catch (err) {
+        console.error("PDF engine error:", err);
+        return null;
+    } finally {
+        // Restore window.getComputedStyle immediately
+        window.getComputedStyle = originalGetComputedStyle;
+        
+        // Restore `<style>` contents immediately
+        tempStyleOverrides.forEach(override => {
+            try {
+                override.element.innerHTML = override.originalText;
+            } catch (restoreErr) {
+                console.error("Style restore error:", restoreErr);
+            }
+        });
+        
+        setIsGeneratingPDF(false);
+    }
+  };
+
+  const handleDownloadPDF = async () => {
+    const res = await generatePDFBlob();
+    if (res) {
+        const { blob, filename } = res;
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(link.href);
+    } else {
+        window.print();
+    }
+  };
+
+  const handleSharePDF = async () => {
+    const res = await generatePDFBlob();
+    if (res) {
+        const { blob, filename } = res;
         const file = new File([blob], filename, { type: 'application/pdf' });
         
         if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -585,14 +713,8 @@ export default function App() {
             document.body.removeChild(link);
             URL.revokeObjectURL(link.href);
         }
-    } catch (err) {
-        console.error("PDF engine error, falling back to print:", err);
-        if (printContainer.parentNode) {
-            document.body.removeChild(printContainer);
-        }
+    } else {
         window.print();
-    } finally {
-        setIsGeneratingPDF(false);
     }
   };
 
@@ -985,28 +1107,33 @@ export default function App() {
             overflow: visible !important;
             display: block !important;
             position: relative !important;
-        }
-        div, section, table, tbody, tr, td {
-            overflow: visible !important;
-            height: auto !important;
+            background: white !important;
         }
         .no-print { display: none !important; }
         .print-only { display: block !important; }
-        body { background: white !important; font-size: 10pt; color: black !important; }
-        .print-table-wrapper { width: 100%; border-collapse: collapse; }
-        .print-header-group { display: table-header-group; }
-        .print-footer-group { display: table-footer-group; }
-        th, td, tr { background-color: transparent !important; background: none !important; }
-        .print-table th { border-bottom: 2px solid black !important; padding: 6px 4px; text-align: left; font-weight: bold; color: black !important; font-size: 10pt; }
-        .print-table td { border-bottom: 1px solid #ddd !important; padding: 6px 4px; color: black !important; font-size: 10pt; }
-        .page-break { page-break-inside: avoid; break-inside: avoid; }
+        body { background: white !important; color: black !important; margin: 0 !important; padding: 0 !important; }
+        
+        .printable-page-a4 {
+            box-shadow: none !important;
+            border: none !important;
+            margin: 0 !important;
+            padding: 15mm !important;
+            width: 210mm !important;
+            height: 297mm !important;
+            page-break-after: always !important;
+            break-after: page !important;
+            overflow: hidden !important;
+            box-sizing: border-box !important;
+            background: white !important;
+        }
+        
         .draft-watermark {
-            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-35deg);
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-35deg);
             font-size: 130px; font-weight: 900; color: rgba(130, 130, 130, 0.13) !important; letter-spacing: 12px; pointer-events: none; z-index: 9999; display: block !important;
             text-shadow: none !important;
         }
-        .print-container { width: 100%; }
-        @page { size: A4; margin: 12mm; }
+        
+        @page { size: A4; margin: 0 !important; }
       }
     `}} />
   );
@@ -1114,7 +1241,11 @@ export default function App() {
                          <Printer size={18} className="md:w-5 md:h-5"/>
                          <span className="text-sm hidden md:inline">พิมพ์ (A4)</span>
                      </button>
-                     <button onClick={handleSharePDF} className="p-1.5 md:p-2 hover:bg-white/10 rounded-full text-blue-300 flex items-center gap-1 transition-all" title="แชร์ PDF">
+                     <button onClick={handleDownloadPDF} className="p-1.5 md:p-2 hover:bg-white/10 rounded-full text-teal-300 flex items-center gap-1 transition-all" title="ดาวน์โหลด PDF">
+                          <Download size={18} className="md:w-5 md:h-5"/>
+                          <span className="text-sm hidden md:inline">ดาวน์โหลด PDF</span>
+                      </button>
+                      <button onClick={handleSharePDF} className="p-1.5 md:p-2 hover:bg-white/10 rounded-full text-blue-300 flex items-center gap-1 transition-all" title="แชร์ PDF">
                          <Share size={18} className="md:w-5 md:h-5"/> 
                          <span className="text-sm hidden md:inline">แชร์ PDF</span>
                      </button>
@@ -1231,7 +1362,7 @@ export default function App() {
 
              {/* Responsive Scrollable Container to prevent table from overflowing on mobile viewports */}
              <div className="w-full overflow-x-auto -mx-2 px-2 md:-mx-0 md:px-0 scrollbar-thin print:overflow-visible">
-                 <table id="quotation-print-sheet" className="w-full print-table-wrapper text-sm font-sans min-w-[700px] md:min-w-0 bg-white">
+                 <table id="quotation-print-sheet" className="w-full print-table-wrapper print-table text-sm font-sans min-w-[700px] md:min-w-0 bg-white">
                 <thead className="print-header-group">
                     <tr>
                         <td colSpan={6}>
@@ -1360,19 +1491,24 @@ export default function App() {
              </table>
              </div>
              {/* Sticky Bottom Actions inside the Summary screen for mobile (above bottom navigation menu) */}
-             <div className="no-print md:hidden fixed bottom-16 left-0 right-0 z-40 bg-white/95 backdrop-blur border-t p-3 flex flex-row gap-3 shadow-lg max-w-[1920px] mx-auto">
-                 <button onClick={() => setAppState('editor')} className="flex-1 py-3 px-2 rounded-xl bg-gray-100 text-gray-750 font-bold text-xs flex items-center justify-center gap-1 cursor-pointer font-sans">
-                     <ArrowLeft size={14}/> แก้ไขข้อมูล
+             <div className="no-print md:hidden fixed bottom-16 left-0 right-0 z-40 bg-white/95 backdrop-blur border-t p-3 flex flex-row gap-2 shadow-lg max-w-[1920px] mx-auto">
+                 <button onClick={() => setAppState('editor')} className="px-2.5 py-3 rounded-xl bg-gray-100 text-gray-750 font-bold text-xs flex items-center justify-center gap-1 cursor-pointer font-sans flex-1" title="แก้ไขข้อมูล">
+                     <ArrowLeft size={14}/> แก้ไข
                  </button>
-                 <button onClick={handleSharePDF} className="flex-1 py-3 px-3 rounded-xl bg-blue-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md cursor-pointer font-sans font-bold">
-                     <Printer size={14}/> แชร์ไฟล์ PDF
+                 <button onClick={handleDownloadPDF} className="px-2.5 py-3 rounded-xl bg-emerald-600 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md cursor-pointer font-sans flex-1" title="ดาวน์โหลด PDF">
+                     <Download size={14}/> ดาวน์โหลด
+                 </button>
+                 <button onClick={handleSharePDF} className="px-2.5 py-3 rounded-xl bg-blue-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md cursor-pointer font-sans flex-1 animate-pulse" title="แชร์เข้า LINE">
+                     <Share size={14}/> แชร์ PDF
                  </button>
              </div>
 
              <div className="mt-10 hidden md:flex justify-center gap-4 no-print pb-10">
                  <button onClick={() => setAppState('editor')} className="px-6 py-2 rounded-lg bg-gray-100 text-gray-650 hover:bg-gray-200 transition-colors cursor-pointer font-sans">กลับไปแก้ไข</button>
                  <button onClick={handlePrintDraft} className="px-6 py-2 rounded-lg bg-gray-600 text-white shadow hover:bg-gray-700 flex items-center gap-2 transition-colors cursor-pointer font-sans"><Printer size={18}/> พิมพ์ (Draft)</button>
-                 <button onClick={() => window.print()} className="px-6 py-2 rounded-lg bg-blue-700 text-white shadow hover:bg-blue-800 flex items-center gap-2 transition-colors cursor-pointer font-sans"><Printer size={18}/> พิมพ์สรุปใบเสนอราคา</button>
+                 <button onClick={handleDownloadPDF} className="px-6 py-2 rounded-lg bg-emerald-600 text-white shadow hover:bg-emerald-700 flex items-center gap-2 transition-colors cursor-pointer font-sans"><Download size={18}/> ดาวน์โหลด PDF</button>
+                 <button onClick={handleSharePDF} className="px-6 py-2 rounded-lg bg-indigo-600 text-white shadow hover:bg-indigo-700 flex items-center gap-2 transition-colors cursor-pointer font-sans"><Share size={18}/> แชร์ PDF</button>
+                 <button onClick={() => window.print()} className="px-6 py-2 rounded-lg bg-blue-700 text-white shadow hover:bg-blue-800 flex items-center gap-2 transition-colors cursor-pointer font-sans"><Printer size={18}/> พิมพ์ตามระบบบราวเซอร์</button>
              </div>
         </div>
       ) : (
