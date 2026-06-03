@@ -10,10 +10,10 @@ interface CustomerFormProps {
 }
 
 export const CustomerForm = ({ customer, setCustomer, onNext, onCancel }: CustomerFormProps) => (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4 font-sans">
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-2 sm:p-4 font-sans">
         <Card className="w-full max-w-2xl p-0 shadow-lg">
-            <div className="p-8">
-                <h1 className="text-2xl font-bold mb-6 text-blue-800 border-b pb-4">ข้อมูลลูกค้าใหม่</h1>
+            <div className="p-4 sm:p-8">
+                <h1 className="text-xl sm:text-2xl font-bold mb-4 sm:mb-6 text-blue-800 border-b pb-3 sm:pb-4">ข้อมูลลูกค้าใหม่</h1>
                 <div className="grid gap-6">
                     <div className="grid md:grid-cols-2 gap-4">
                         <div>

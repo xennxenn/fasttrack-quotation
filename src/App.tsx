@@ -1,14 +1,16 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { jsPDF } from 'jspdf';
+import html2canvas from 'html2canvas';
 import { 
   Plus, Trash2, FileText, User, Home, Save, Calculator, X, Database, 
   CheckSquare, Upload, Edit, Cloud, Download, LogOut, LayoutGrid, MapPin, 
   Layers, Scissors, Package, ArrowRight, Info, Users, FilePenLine, Percent, 
   CheckCircle, Loader, Printer, Ruler, Palette, ArrowLeft, ArrowUp, ArrowDown, Share,
-  ChevronDown, ChevronUp
+  ChevronDown, ChevronUp, Settings, ExternalLink
 } from 'lucide-react';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, Timestamp, onSnapshot } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, deleteDoc, Timestamp, onSnapshot, enableIndexedDbPersistence } from 'firebase/firestore';
 
 // --- Imports from modular files ---
 import { 
@@ -21,6 +23,7 @@ import { LoginScreen } from './components/LoginScreen';
 import { CustomerForm } from './components/CustomerForm';
 import { Dashboard } from './components/Dashboard';
 import { ThemeManager, FormulaManager, DatabaseEditor, StaffManager } from './components/AdminSettings';
+import { safeLocalStorageSetItem } from './utils';
 
 // --- Firebase Config ---
 const firebaseConfig = {
@@ -36,7 +39,17 @@ const firebaseConfig = {
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 const auth = getAuth(app);
 const firestore = getFirestore(app);
-const appId = typeof (window as any).__app_id !== 'undefined' ? (window as any).__app_id : 'fast-track-quote';
+
+// Enable Firestore persistence for lightning-fast loading of old documents and true offline support
+try {
+  enableIndexedDbPersistence(firestore).catch((err) => {
+      console.warn("Firestore offline persistence failed to enable:", err.code);
+  });
+} catch (e) {
+  console.error("Firestore persistence init error:", e);
+}
+
+const appId = 'fast-track-quote';
 
 // --- Helper Functions ---
 const formatDate = (timestamp: any) => {
@@ -53,6 +66,11 @@ export default function App() {
   const [modal, setModal] = useState<string | null>(null);
   const [inputText, setInputText] = useState(''); 
   const [editTarget, setEditTarget] = useState<any>(null); 
+  const [deleteConfirm, setDeleteConfirm] = useState<{
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  } | null>(null);
 
   const [user, setUser] = useState<any>(null); 
   
@@ -93,6 +111,7 @@ export default function App() {
   const [ontopPercent, setOntopPercent] = useState(0);
   const [quoteId, setQuoteId] = useState<string | null>(null); 
   const [isDraftPrint, setIsDraftPrint] = useState(false);
+  const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
   const [saveStatus, setSaveStatus] = useState(''); 
   const [isDataLoaded, setIsDataLoaded] = useState(false);
   const [quoteOwner, setQuoteOwner] = useState<Staff | null>(null); 
@@ -108,6 +127,9 @@ export default function App() {
 
   // Mobile & UI State
   const [isHouseListCollapsed, setIsHouseListCollapsed] = useState(false); 
+  const [activeMobileTab, setActiveMobileTab] = useState<'area' | 'spec' | 'items'>('area');
+  const [adminMenuOpen, setAdminMenuOpen] = useState(false);
+  const [showIframeWarn, setShowIframeWarn] = useState(true);
   
   const initialItemState = {
     id: null as string | null,
@@ -117,6 +139,21 @@ export default function App() {
     discFabric: 30, discSew: 30, discRail: 30, discAcc: 30, 
     isOntopFabric: true, isOntopSew: true, isOntopRail: true, isOntopAcc: true,
     otherExpenseType: '', customNote: '', customPrice: 0, customDiscount: 0
+  };
+  const sanitizeItem = (item: any) => {
+    return {
+      ...initialItemState,
+      ...item,
+      extraAccessories: Array.isArray(item?.extraAccessories) ? item.extraAccessories : [],
+      discFabric: typeof item?.discFabric === 'number' ? item.discFabric : initialItemState.discFabric,
+      discSew: typeof item?.discSew === 'number' ? item.discSew : initialItemState.discSew,
+      discRail: typeof item?.discRail === 'number' ? item.discRail : initialItemState.discRail,
+      discAcc: typeof item?.discAcc === 'number' ? item.discAcc : initialItemState.discAcc,
+      isOntopFabric: typeof item?.isOntopFabric === 'boolean' ? item.isOntopFabric : initialItemState.isOntopFabric,
+      isOntopSew: typeof item?.isOntopSew === 'boolean' ? item.isOntopSew : initialItemState.isOntopSew,
+      isOntopRail: typeof item?.isOntopRail === 'boolean' ? item.isOntopRail : initialItemState.isOntopRail,
+      isOntopAcc: typeof item?.isOntopAcc === 'boolean' ? item.isOntopAcc : initialItemState.isOntopAcc,
+    };
   };
   const [currentItem, setCurrentItem] = useState(initialItemState);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
@@ -133,6 +170,9 @@ export default function App() {
   
   const housesInQuote = useMemo(() => [...new Set(items.map(i => i.houseName))], [items]);
   const activeItems = useMemo(() => items.filter(i => !excludedHouses.includes(i.houseName)), [items, excludedHouses]);
+  const itemsInCurrentRoom = useMemo(() => {
+      return items.filter(i => i.houseName === selectedHouse && i.roomName === selectedRoom);
+  }, [items, selectedHouse, selectedRoom]);
 
   const checkCondition = (condition: string, currentStyle: string) => {
       if (!condition || condition === 'all') return true;
@@ -167,7 +207,7 @@ export default function App() {
 
   const handleLogin = (staffData: Staff) => { 
       setStaff(staffData); 
-      localStorage.setItem('currentStaff', JSON.stringify(staffData));
+      safeLocalStorageSetItem('currentStaff', JSON.stringify(staffData));
       setAppState('dashboard'); 
   };
   const handleLogout = () => { 
@@ -207,7 +247,49 @@ export default function App() {
       setAppState('editor'); 
   };
 
-  const handleSaveItem = () => { if (!currentItem.fabricId && currentItem.curtainType !== 'อื่นๆ') return alert("กรุณาเลือกผ้า/รุ่น"); if (currentItem.curtainType === 'อื่นๆ' && !currentItem.otherExpenseType) return alert("กรุณาเลือกประเภทค่าใช้จ่าย"); if (!selectedHouse || !selectedRoom) return alert("กรุณาเลือกบ้านและห้อง"); const resultToSave = computedResult; const newItem = { ...currentItem, houseName: selectedHouse, roomName: selectedRoom, id: editingItemId || String(Date.now()), calculated: resultToSave, staffId: staff?.id }; if (editingItemId) { setItems(items.map(i => i.id === editingItemId ? newItem : i)); setEditingItemId(null); } else { setItems([...items, newItem]); } setCurrentItem({...initialItemState}); };
+  const handleSaveItem = () => { 
+      if (!currentItem.fabricId && currentItem.curtainType !== 'อื่นๆ') {
+          return alert("กรุณาเลือกผ้า/รุ่น");
+      }
+      if (currentItem.curtainType === 'อื่นๆ' && !currentItem.otherExpenseType) {
+          return alert("กรุณาเลือกประเภทค่าใช้จ่าย");
+      }
+      if (!selectedHouse || !selectedRoom) {
+          return alert("กรุณาเลือกบ้านและห้อง");
+      }
+      
+      const resultToSave = computedResult;
+      const parsedItem = {
+          ...currentItem,
+          railWidth: parseFloat(currentItem.railWidth as any) || 0,
+          railHeight: parseFloat(currentItem.railHeight as any) || 0,
+          quantity: parseInt(currentItem.quantity as any) || 0,
+          customPrice: parseFloat(currentItem.customPrice as any) || 0,
+          customDiscount: parseFloat(currentItem.customDiscount as any) || 0,
+          discFabric: parseFloat(currentItem.discFabric as any) || 0,
+          discSew: parseFloat(currentItem.discSew as any) || 0,
+          discRail: parseFloat(currentItem.discRail as any) || 0,
+          discAcc: parseFloat(currentItem.discAcc as any) || 0,
+      };
+      const newItem = { 
+          ...parsedItem, 
+          houseName: selectedHouse, 
+          roomName: selectedRoom, 
+          id: editingItemId || String(Date.now()), 
+          calculated: resultToSave, 
+          staffId: staff?.id 
+      };
+      
+      if (editingItemId) {
+          setItems(items.map(i => i.id === editingItemId ? newItem : i));
+          setEditingItemId(null);
+      } else {
+          setItems([...items, newItem]);
+      }
+      
+      setCurrentItem({...initialItemState});
+      setActiveMobileTab('items');
+  };
   const handlePrintDraft = () => { setIsDraftPrint(true); setTimeout(() => { window.print(); setIsDraftPrint(false); }, 100); };
   
   const handleSaveToCloud = async () => { 
@@ -281,7 +363,21 @@ export default function App() {
 
   const handleAddHouse = () => { setInputText(''); setModal('add_house'); };
   const confirmAddHouse = () => { if(inputText.trim()) { setTempHouses([...tempHouses, inputText.trim()]); setSelectedHouse(inputText.trim()); setSelectedRoom(null); } setModal(null); };
-  const handleDeleteHouse = (house: string, e: React.MouseEvent) => { e.stopPropagation(); if(confirm(`ลบ "${house}"?`)) { setItems(items.filter(i => i.houseName !== house)); setTempHouses(tempHouses.filter(h => h !== house)); if(selectedHouse === house) { setSelectedHouse(null); setSelectedRoom(null); } } };
+  const handleDeleteHouse = (house: string, e: React.MouseEvent) => { 
+    e.stopPropagation(); 
+    setDeleteConfirm({
+      title: 'ยืนยันการลบหลัง/บ้าน',
+      message: `คุณต้องการลบ "${house}" ใช่หรือไม่? (การลบจะเอาสินค้าทั้งหมดในบ้านหลังนี้ออกด้วย)`,
+      onConfirm: () => {
+        setItems(items => items.filter(i => i.houseName !== house)); 
+        setTempHouses(tempHouses => tempHouses.filter(h => h !== house)); 
+        if(selectedHouse === house) { 
+          setSelectedHouse(null); 
+          setSelectedRoom(null); 
+        }
+      }
+    });
+  };
   const handleAddRoom = () => { if(!selectedHouse) return alert("เลือกบ้านก่อน"); setInputText(''); setModal('add_room'); };
   const confirmAddRoom = () => { 
       if(inputText.trim()) { 
@@ -291,12 +387,35 @@ export default function App() {
               [selectedHouse as string]: [...(prev[selectedHouse as string]||[]), newRoom]
           })); 
           setSelectedRoom(newRoom); 
+          setActiveMobileTab('spec');
       } 
       setModal(null); 
   };
-  const handleDeleteRoom = (room: string, e: React.MouseEvent) => { e.stopPropagation(); if(confirm(`ลบห้อง "${room}"?`)) { setItems(items.filter(i => i.houseName !== selectedHouse || i.roomName !== room)); setTempRooms({ ...tempRooms, [selectedHouse as string]: (tempRooms[selectedHouse as string]||[]).filter(r => r !== room) }); if(selectedRoom === room) setSelectedRoom(null); } };
-  const handleEditFromSummary = (item: any) => { setEditingItemId(item.id); setCurrentItem(item); setSelectedHouse(item.houseName); setSelectedRoom(item.roomName); setAppState('editor'); };
-  const handleRemoveFromSummary = (id: string) => { if(confirm("ลบรายการนี้?")) setItems(items.filter(i=>i.id !== id)); };
+  const handleDeleteRoom = (room: string, e: React.MouseEvent) => { 
+    e.stopPropagation(); 
+    setDeleteConfirm({
+      title: 'ยืนยันการลบห้อง',
+      message: `คุณต้องการลบห้อง "${room}" ใช่หรือไม่? (การลบจะเอาสินค้าทัั้งหมดในห้องนี้ออกด้วย)`,
+      onConfirm: () => {
+        setItems(items => items.filter(i => i.houseName !== selectedHouse || i.roomName !== room)); 
+        setTempRooms(tempRooms => ({ 
+          ...tempRooms, 
+          [selectedHouse as string]: (tempRooms[selectedHouse as string]||[]).filter(r => r !== room) 
+        })); 
+        if(selectedRoom === room) setSelectedRoom(null);
+      }
+    });
+  };
+  const handleEditFromSummary = (item: any) => { setEditingItemId(item.id); setCurrentItem(sanitizeItem(item)); setSelectedHouse(item.houseName); setSelectedRoom(item.roomName); setAppState('editor'); setActiveMobileTab('spec'); };
+  const handleRemoveFromSummary = (id: string) => { 
+    setDeleteConfirm({
+      title: 'ยืนยันการลบรายการสินค้า',
+      message: 'คุณต้องการลบรายการสินค้านี้ออกจากการเสนอราคาใช่หรือไม่?',
+      onConfirm: () => {
+        setItems(items => items.filter(i => i.id !== id));
+      }
+    });
+  };
 
   const handleEditName = (type: string, oldName: string) => {
     setEditTarget({ type, oldName });
@@ -377,16 +496,143 @@ export default function App() {
       }
   };
   
-  const handleSharePDF = () => {
-    if (typeof window !== 'undefined') {
-        const originalTitle = document.title;
-        document.title = `ใบเสนอราคาเบื้องต้น_${customer.name}`;
-        setIsDraftPrint(true);
-        setTimeout(() => {
-            window.print();
-            setIsDraftPrint(false);
-            document.title = originalTitle;
-        }, 500);
+  const handleSharePDF = async () => {
+    const element = document.getElementById('quotation-print-sheet');
+    if (!element) return;
+    
+    setIsGeneratingPDF(true);
+    
+    // Create a temporary off-screen container for crisp, complete desktop-width rendering (fixing mobile column truncation)
+    const printContainer = document.createElement('div');
+    printContainer.style.position = 'absolute';
+    printContainer.style.left = '-9999px';
+    printContainer.style.top = '0';
+    printContainer.style.width = '1000px';
+    printContainer.style.backgroundColor = '#ffffff';
+    
+    // Clone the real element to avoid affecting user's viewport
+    const clone = element.cloneNode(true) as HTMLElement;
+    clone.style.width = '1000px';
+    clone.style.maxWidth = 'none';
+    clone.style.overflow = 'visible';
+    clone.style.padding = '20px';
+    
+    // Permanently remove all no-print elements (like checkboxes, edits, delete buttons) from the captured tree
+    const noPrintElements = clone.querySelectorAll('.no-print');
+    noPrintElements.forEach(el => el.remove());
+    
+    printContainer.appendChild(clone);
+    document.body.appendChild(printContainer);
+    
+    try {
+        const canvas = await html2canvas(clone, {
+            scale: 2,
+            useCORS: true,
+            scrollX: 0,
+            scrollY: 0,
+            windowWidth: 1000,
+            backgroundColor: '#ffffff'
+        });
+        
+        // Remove cloned DOM elements immediately
+        if (printContainer.parentNode) {
+            document.body.removeChild(printContainer);
+        }
+        
+        const imgData = canvas.toDataURL('image/jpeg', 0.95);
+        const pdf = new jsPDF('p', 'mm', 'a4');
+        const imgWidth = 210; 
+        const pageHeight = 297; 
+        const imgHeight = (canvas.height * imgWidth) / canvas.width;
+        let heightLeft = imgHeight;
+        let position = 0;
+        
+        pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
+        heightLeft -= pageHeight;
+        
+        while (heightLeft >= 0) {
+            position = heightLeft - imgHeight;
+            pdf.addPage();
+            pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
+            heightLeft -= pageHeight;
+        }
+        
+        const blob = pdf.output('blob');
+        const filename = `ใบเสนอราคา_คุณ${customer.name || 'ลูกค้า'}.pdf`;
+        const file = new File([blob], filename, { type: 'application/pdf' });
+        
+        if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+            try {
+                await navigator.share({
+                    files: [file]
+                });
+            } catch (shareErr) {
+                console.warn("navigator.share failed, falling back to direct download link:", shareErr);
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(link.href);
+            }
+        } else {
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(link.href);
+        }
+    } catch (err) {
+        console.error("PDF engine error, falling back to print:", err);
+        if (printContainer.parentNode) {
+            document.body.removeChild(printContainer);
+        }
+        window.print();
+    } finally {
+        setIsGeneratingPDF(false);
+    }
+  };
+
+  const handleShareTextSummary = () => {
+    const itemLines = activeItems
+        .filter(i => !excludedItemIds.includes(i.id))
+        .map((item, idx) => {
+            const isOther = item.curtainType === 'อื่นๆ';
+            let desc = '';
+            if (isOther) {
+                desc = item.customNote || OTHER_EXPENSES.find(e => e.id === item.otherExpenseType)?.label || 'อื่นๆ';
+            } else {
+                const fabric = db.fabrics.find((f: any) => f.id === item.fabricId) || db.blinds.find((b: any) => b.id === item.fabricId) || db.venetians.find((b: any) => b.id === item.fabricId);
+                desc = `${formulas.find(s=>s.id===item.curtainStyle)?.label || ''} (${item.curtainType}) ${item.railWidth} x ${item.railHeight} ซม. ${fabric ? `[ผ้า: ${fabric.name}]` : ''}`;
+            }
+            return `${idx + 1}. ${item.houseName} - ${item.roomName} : ${desc} - ${Math.ceil(item.calculated?.grandTotal || 0).toLocaleString()} บาท`;
+        })
+        .join('\n');
+
+    const shareText = `ใบเสนอราคาเบื้องต้นคุณ ${customer.name || 'ลูกค้า'}\n` +
+                      `เบอร์โทร: ${customer.phone || '-'}\n` +
+                      `-----------------------------\n` +
+                      `${itemLines || 'ไม่มีรายการสินค้า'}\n` +
+                      `-----------------------------\n` +
+                      `ส่วนลด On Top: ${ontopPercent}%\n` +
+                      `ยอดรวมสุทธิ: ${Math.ceil(summaryTotals.finalNet).toLocaleString()} บาท\n` +
+                      `เสนอราคาโดย: ${quoteOwner?.name || staff?.name || ''}`;
+
+    if (navigator.share) {
+        navigator.share({
+            title: `ใบเสนอราคาคุณ ${customer.name || 'ลูกค้า'}`,
+            text: shareText
+        }).catch(e => console.log('Share canceled', e));
+    } else {
+        if (navigator.clipboard) {
+            navigator.clipboard.writeText(shareText);
+            alert('คัดลอกข้อความสรุปใส่คลิปบอร์ดแล้ว คุณสามารถกดวางเพื่อส่งให้ลูกค้าใน LINE ได้เลย!');
+        } else {
+            alert('เบราว์เซอร์ไม่รองรับการส่งแชร์ กรุณาคัดลอกข้อมูลสรุปด้วยตนเอง');
+        }
     }
   };
 
@@ -420,7 +666,7 @@ export default function App() {
                     if(docSnap.exists()) {
                         const data = docSnap.data().list;
                         setStaffList(data); 
-                        localStorage.setItem('cached_staffList', JSON.stringify(data));
+                        safeLocalStorageSetItem('cached_staffList', JSON.stringify(data));
                     }
                 },
                 (err) => console.error("staff_data listener error", err)
@@ -430,7 +676,7 @@ export default function App() {
                     if(docSnap.exists()) {
                         const data = docSnap.data().list;
                         setFormulas(data); 
-                        localStorage.setItem('cached_formulas', JSON.stringify(data));
+                        safeLocalStorageSetItem('cached_formulas', JSON.stringify(data));
                     }
                 },
                 (err) => console.error("formula_data listener error", err)
@@ -440,7 +686,7 @@ export default function App() {
                     if(docSnap.exists()) {
                         const data = docSnap.data();
                         setTheme(data); 
-                        localStorage.setItem('cached_theme', JSON.stringify(data));
+                        safeLocalStorageSetItem('cached_theme', JSON.stringify(data));
                     }
                 },
                 (err) => console.error("theme_data listener error", err)
@@ -450,7 +696,7 @@ export default function App() {
                     if(docSnap.exists()) {
                         const data = docSnap.data();
                         setDb(data); 
-                        localStorage.setItem('cached_db', JSON.stringify(data));
+                        safeLocalStorageSetItem('cached_db', JSON.stringify(data));
                     }
                 },
                 (err) => console.error("db_data listener error", err)
@@ -494,7 +740,23 @@ export default function App() {
 
   // --- CALCULATOR CALCULATION LOGIC ---
   const computedResult = useMemo(() => {
-    const { curtainStyle, railWidth, railHeight, panels, fabricId, quantity, railAccessoryId, extraAccessories, discFabric, discSew, discRail, discAcc, calcStyle, curtainType, otherExpenseType, customPrice, customDiscount } = currentItem;
+    const curtainStyle = currentItem.curtainStyle;
+    const railWidth = parseFloat(currentItem.railWidth as any) || 0;
+    const railHeight = parseFloat(currentItem.railHeight as any) || 0;
+    const panels = parseInt(currentItem.panels as any) || 1;
+    const fabricId = currentItem.fabricId;
+    const quantity = parseInt(currentItem.quantity as any) || 0;
+    const railAccessoryId = currentItem.railAccessoryId;
+    const extraAccessories = currentItem.extraAccessories;
+    const discFabric = parseFloat(currentItem.discFabric as any) || 0;
+    const discSew = parseFloat(currentItem.discSew as any) || 0;
+    const discRail = parseFloat(currentItem.discRail as any) || 0;
+    const discAcc = parseFloat(currentItem.discAcc as any) || 0;
+    const calcStyle = currentItem.calcStyle;
+    const curtainType = currentItem.curtainType;
+    const otherExpenseType = currentItem.otherExpenseType;
+    const customPrice = parseFloat(currentItem.customPrice as any) || 0;
+    const customDiscount = parseFloat(currentItem.customDiscount as any) || 0;
     
     if (curtainType === 'อื่นๆ') {
         const exp = OTHER_EXPENSES.find(e => e.id === otherExpenseType);
@@ -589,7 +851,8 @@ export default function App() {
     }
     let costAcc = extraAccessories.reduce((sum, accObj) => {
         const a = db.accs.find((x: any) => x.id === accObj.id);
-        return sum + (a ? (a.price * accObj.qty) : 0);
+        const qty = parseInt(accObj.qty as any) || 0;
+        return sum + (a ? (a.price * qty) : 0);
     }, 0);
 
     const costFabric = usage * priceUnit;
@@ -695,9 +958,10 @@ export default function App() {
       }
       .std-input {
         background-color: white !important;
-        border: 1px solid #d1d5db !important;
-        border-radius: 0.375rem !important;
-        padding: 0.75rem !important;
+        border: 1px solid #64748b !important;
+        color: #0f172a !important;
+        border-radius: 0.5rem !important;
+        padding: 0.45rem 0.65rem !important;
         outline: none !important;
         font-size: 0.875rem !important;
         transition: all 0.2s !important;
@@ -710,26 +974,39 @@ export default function App() {
         display: block !important;
         font-size: 0.75rem !important;
         font-weight: 700 !important;
-        color: #374151 !important;
+        color: #0f172a !important;
         margin-bottom: 0.375rem !important;
         margin-left: 0.25rem !important;
       }
       @media print {
+        html, body, #root, .min-h-screen, .flex-col, .flex-1, .app-layout {
+            height: auto !important;
+            min-height: initial !important;
+            overflow: visible !important;
+            display: block !important;
+            position: relative !important;
+        }
+        div, section, table, tbody, tr, td {
+            overflow: visible !important;
+            height: auto !important;
+        }
         .no-print { display: none !important; }
         .print-only { display: block !important; }
-        body { background: white; font-size: 10pt; }
+        body { background: white !important; font-size: 10pt; color: black !important; }
         .print-table-wrapper { width: 100%; border-collapse: collapse; }
         .print-header-group { display: table-header-group; }
         .print-footer-group { display: table-footer-group; }
-        .print-table th { border-bottom: 2px solid black !important; padding: 4px; text-align: left; font-weight: bold; color: black; font-size: 10pt; }
-        .print-table td { border-bottom: 1px solid #eee !important; padding: 4px; color: black; font-size: 10pt; }
-        .page-break { page-break-inside: avoid; }
+        th, td, tr { background-color: transparent !important; background: none !important; }
+        .print-table th { border-bottom: 2px solid black !important; padding: 6px 4px; text-align: left; font-weight: bold; color: black !important; font-size: 10pt; }
+        .print-table td { border-bottom: 1px solid #ddd !important; padding: 6px 4px; color: black !important; font-size: 10pt; }
+        .page-break { page-break-inside: avoid; break-inside: avoid; }
         .draft-watermark {
-            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-45deg);
-            font-size: 150px; font-weight: bold; color: rgba(200, 200, 200, 0.5) !important; opacity: 1; pointer-events: none; z-index: 9999; display: block !important;
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-35deg);
+            font-size: 130px; font-weight: 900; color: rgba(130, 130, 130, 0.13) !important; letter-spacing: 12px; pointer-events: none; z-index: 9999; display: block !important;
+            text-shadow: none !important;
         }
         .print-container { width: 100%; }
-        @page { size: A4; margin: 10mm; @bottom-right { content: "หน้าที่ " counter(page) " / " counter(pages); font-size: 10px; color: #999; } }
+        @page { size: A4; margin: 12mm; }
       }
     `}} />
   );
@@ -766,54 +1043,158 @@ export default function App() {
           </>
       );
   }
-  
-  if (appState === 'customer_form') {
-      return (
-          <>
-              <StyleBlock />
-              <CustomerForm customer={customer} setCustomer={setCustomer} onNext={handleStartQuote} onCancel={()=>setAppState('dashboard')} />
-          </>
-      );
-  }
-
-  const itemsInCurrentRoom = items.filter(i => i.houseName === selectedHouse && i.roomName === selectedRoom);
 
   return (
     <div className="min-h-screen bg-gray-50 font-sans text-gray-800 flex flex-col">
       <StyleBlock />
 
-      <nav className="sticky top-0 z-40 theme-bg-main text-white px-6 py-3 flex justify-between items-center shadow-md no-print">
-         <div className="flex items-center gap-3">
-             <div className="bg-white/10 p-2 rounded-lg"><Calculator size={20}/></div>
-             <div><h1 className="font-bold text-lg leading-tight">Fast Track</h1><p className="text-xs text-blue-200">ระบบใบเสนอราคา</p></div>
+      {isGeneratingPDF && (
+          <div className="fixed inset-0 bg-black/65 z-[9999] flex flex-col items-center justify-center p-4">
+              <div className="bg-white rounded-2xl p-6 shadow-2xl flex flex-col items-center gap-4 text-center max-w-xs w-full">
+                  <div className="bg-blue-50 p-4 rounded-full theme-text-action flex items-center justify-center">
+                      <Loader className="animate-spin text-blue-600" size={32} />
+                  </div>
+                  <div>
+                      <h4 className="font-bold text-gray-950 text-base">กำลังสร้างไฟล์ PDF...</h4>
+                      <p className="text-xs text-gray-600 mt-1">กรุณารอสสักครู่ ระบบกำลังจัดเตรียมหน้ากระดาษเพื่อแชร์ไปยังแอปหลักปุ่มแชร์ทันที</p>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      <nav className="sticky top-0 z-40 theme-bg-main text-white px-4 md:px-6 py-3 flex justify-between items-center shadow-md no-print select-none">
+          <div className="flex items-center gap-2 md:gap-3">
+             <div className="bg-white/10 p-1.5 md:p-2 rounded-lg flex-shrink-0"><Calculator size={18} className="md:w-5 md:h-5"/></div>
+             <div className="flex-shrink-0"><h1 className="font-bold text-base md:text-lg leading-tight">Fast Track</h1><p className="text-[10px] md:text-xs text-blue-200 hidden sm:block">ระบบใบเสนอราคา</p></div>
          </div>
-         <div className="flex items-center gap-3">
-             {saveStatus === 'saving' && <span className="flex items-center gap-1 text-xs text-yellow-300 animate-pulse"><Loader size={12} className="animate-spin"/> กำลังบันทึก...</span>}
-             {saveStatus === 'saved' && <span className="flex items-center gap-1 text-xs text-green-300"><CheckCircle size={12}/> บันทึกแล้ว</span>}
-             <div className="h-6 w-px bg-white/20 mx-2"></div>
-             <span className="text-sm font-semibold bg-white/10 px-3 py-1 rounded-full">{staff?.name}</span>
-             {appState === 'editor' && <button onClick={() => setAppState('dashboard')} className="p-2 hover:bg-white/10 rounded-full text-blue-200 flex items-center gap-1 transition-all"><ArrowLeft size={16}/> <span className="text-sm hidden md:inline">กลับหน้าหลัก</span></button>}
-             <button onClick={() => setModal('cloud_save')} className="p-2 hover:bg-white/10 rounded-full text-green-300 transition-all"><Save size={20}/></button>
-             {appState === 'editor' && <button onClick={() => setAppState('summary')} className="p-2 hover:bg-white/10 rounded-full text-yellow-200 flex items-center gap-1 transition-all"><FileText size={20}/> <span className="text-sm hidden md:inline">ใบเสนอราคา</span></button>}
-             {appState === 'summary' && <button onClick={() => setAppState('editor')} className="p-2 hover:bg-white/10 rounded-full text-yellow-200 flex items-center gap-1 transition-all"><Edit size={20}/> <span className="text-sm hidden md:inline">แก้ไขข้อมูล</span></button>}
-             {appState === 'summary' && <button onClick={handleSharePDF} className="p-2 hover:bg-white/10 rounded-full text-blue-300 flex items-center gap-1 transition-all"><Share size={20}/> <span className="text-sm hidden md:inline">แชร์ PDF</span></button>}
+         <div className="flex items-center gap-1.5 md:gap-3">
+             {saveStatus === 'saving' && (
+                 <span className="flex items-center gap-0.5 md:gap-1 text-xs text-yellow-300 animate-pulse">
+                     <Loader size={12} className="animate-spin"/>
+                     <span className="hidden sm:inline">กำลังบันทึก...</span>
+                 </span>
+             )}
+             {saveStatus === 'saved' && (
+                 <span className="flex items-center gap-0.5 md:gap-1 text-xs text-green-300">
+                     <CheckCircle size={12}/>
+                     <span className="hidden sm:inline">บันทึกแล้ว</span>
+                 </span>
+             )}
+             <div className="hidden sm:block h-6 w-px bg-white/20 mx-1 md:mx-2"></div>
+             <span className="text-xs md:text-sm font-semibold bg-white/10 px-2 md:px-3 py-1 rounded-full hidden sm:inline-block truncate max-w-28">{staff?.name}</span>
+             
+             {appState === 'editor' && (
+                 <button onClick={() => setAppState('dashboard')} className="p-1.5 md:p-2 hover:bg-white/10 rounded-full text-blue-200 flex items-center gap-1 transition-all" title="กลับหน้าหลัก">
+                     <ArrowLeft size={16}/> 
+                     <span className="text-sm hidden md:inline">กลับหน้าหลัก</span>
+                 </button>
+             )}
+             
+             <button onClick={() => setModal('cloud_save')} className="p-1.5 md:p-2 hover:bg-white/10 rounded-full text-green-300 transition-all" title="บันทึกออนไลน์คลาวด์">
+                 <Save size={18} className="md:w-5 md:h-5"/>
+             </button>
+             
+             {appState === 'editor' && (
+                 <button onClick={() => setAppState('summary')} className="p-1.5 md:p-2 hover:bg-white/10 rounded-full text-yellow-200 flex items-center gap-1 transition-all" title="ใบเสนอราคา">
+                     <FileText size={18} className="md:w-5 md:h-5"/> 
+                     <span className="text-sm hidden md:inline">ใบเสนอราคา</span>
+                 </button>
+             )}
+             
+             {appState === 'summary' && (
+                 <button onClick={() => setAppState('editor')} className="p-1.5 md:p-2 hover:bg-white/10 rounded-full text-yellow-200 flex items-center gap-1 transition-all" title="แก้ไขข้อมูล">
+                     <Edit size={18} className="md:w-5 md:h-5"/> 
+                     <span className="text-sm hidden md:inline">แก้ไขข้อมูล</span>
+                 </button>
+             )}
+             
+             {appState === 'summary' && (
+                 <>
+                     <button onClick={() => window.print()} className="p-1.5 md:p-2 hover:bg-white/10 rounded-full text-emerald-300 flex items-center gap-1 transition-all" title="พิมพ์ A4">
+                         <Printer size={18} className="md:w-5 md:h-5"/>
+                         <span className="text-sm hidden md:inline">พิมพ์ (A4)</span>
+                     </button>
+                     <button onClick={handleSharePDF} className="p-1.5 md:p-2 hover:bg-white/10 rounded-full text-blue-300 flex items-center gap-1 transition-all" title="แชร์ PDF">
+                         <Share size={18} className="md:w-5 md:h-5"/> 
+                         <span className="text-sm hidden md:inline">แชร์ PDF</span>
+                     </button>
+                 </>
+             )}
              
              {isAdmin && (
-                <div className="flex items-center gap-1 bg-white/5 rounded-full px-1">
-                    <button onClick={() => setModal('staff_manager')} className="p-2 hover:bg-white/10 rounded-full transition-all text-orange-300"><Users size={20}/></button>
-                    <button onClick={() => setModal('formulas')} className="p-2 hover:bg-white/10 rounded-full transition-all text-green-300"><Ruler size={20}/></button>
-                    <button onClick={() => setModal('theme')} className="p-2 hover:bg-white/10 rounded-full transition-all text-pink-300"><Palette size={20}/></button>
-                    <button onClick={() => setModal('database')} className="p-2 hover:bg-white/10 rounded-full transition-all text-yellow-300"><Database size={20}/></button>
+                <div className="relative">
+                    {/* Desktop Mode (horizontal bar) */}
+                    <div className="hidden lg:flex items-center gap-1 bg-white/5 rounded-full px-1">
+                        <button onClick={() => setModal('staff_manager')} className="p-2 hover:bg-white/10 rounded-full transition-all text-orange-300" title="พนักงาน"><Users size={18}/></button>
+                        <button onClick={() => setModal('formulas')} className="p-2 hover:bg-white/10 rounded-full transition-all text-green-300" title="สูตร"><Ruler size={18}/></button>
+                        <button onClick={() => setModal('theme')} className="p-2 hover:bg-white/10 rounded-full transition-all text-pink-300" title="สี/ธีม"><Palette size={18}/></button>
+                        <button onClick={() => setModal('database')} className="p-2 hover:bg-white/10 rounded-full transition-all text-yellow-300" title="ฐานข้อมูล"><Database size={18}/></button>
+                    </div>
+                    {/* Mobile Mode (elegant gear/settings icon dropdown) */}
+                    <div className="lg:hidden relative">
+                        <button 
+                            onClick={() => setAdminMenuOpen(!adminMenuOpen)} 
+                            className={`p-1.5 hover:bg-white/10 rounded-full transition-all text-orange-300 ${adminMenuOpen ? 'bg-white/20' : ''}`}
+                            title="แอดมินเซ็ตติ้ง"
+                        >
+                            <Settings size={18}/>
+                        </button>
+                        {adminMenuOpen && (
+                            <div className="absolute right-0 mt-2 bg-slate-900 border border-slate-700/80 rounded-xl shadow-2xl p-2 flex flex-col gap-1.5 z-55 w-40 text-white">
+                                <div className="text-[10px] uppercase font-bold text-slate-400 px-2 py-1 border-b border-slate-800 text-center">เมนูผู้ดูแล (Admin)</div>
+                                <button onClick={() => { setModal('staff_manager'); setAdminMenuOpen(false); }} className="w-full flex items-center gap-2 px-2.5 py-1 text-xs font-semibold rounded-lg hover:bg-white/10 text-orange-300 text-left transition-colors cursor-pointer">
+                                    <Users size={14}/> พนักงาน
+                                </button>
+                                <button onClick={() => { setModal('formulas'); setAdminMenuOpen(false); }} className="w-full flex items-center gap-2 px-2.5 py-1 text-xs font-semibold rounded-lg hover:bg-white/10 text-green-300 text-left transition-colors cursor-pointer">
+                                    <Ruler size={14}/> สูตรคำนวณ
+                                </button>
+                                <button onClick={() => { setModal('theme'); setAdminMenuOpen(false); }} className="w-full flex items-center gap-2 px-2.5 py-1 text-xs font-semibold rounded-lg hover:bg-white/10 text-pink-300 text-left transition-colors cursor-pointer">
+                                    <Palette size={14}/> สี/ธีมระบบ
+                                </button>
+                                <button onClick={() => { setModal('database'); setAdminMenuOpen(false); }} className="w-full flex items-center gap-2 px-2.5 py-1 text-xs font-semibold rounded-lg hover:bg-white/10 text-yellow-300 text-left transition-colors cursor-pointer">
+                                    <Database size={14}/> ฐานข้อมูล
+                                </button>
+                            </div>
+                        )}
+                    </div>
                 </div>
              )}
-             <button onClick={handleLogout} className="p-2 hover:bg-red-500 rounded-full transition-all text-red-200"><LogOut size={20}/></button>
+             <button onClick={handleLogout} className="p-1.5 md:p-2 hover:bg-red-500 rounded-full transition-all text-red-200" title="ออกจากระบบ"><LogOut size={16} className="md:w-5 md:h-5"/></button>
          </div>
       </nav>
 
       {/* --- CONTENT SUMMARY OR EDITOR --- */}
       {appState === 'summary' ? (
-        <div className="p-8 max-w-5xl mx-auto w-full relative bg-white min-h-screen font-sans border shadow-sm my-4 rounded-xl">
+        <div className="p-4 md:p-8 max-w-5xl mx-auto w-full relative bg-white min-h-screen font-sans md:border md:shadow-md md:my-6 rounded-none md:rounded-xl pb-24 md:pb-16">
              {isDraftPrint && (<div className="draft-watermark">DRAFT</div>)}
+             
+             {typeof window !== 'undefined' && window.self !== window.top && showIframeWarn && (
+                 <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-xl no-print flex flex-col md:flex-row justify-between items-start md:items-center gap-3 shadow-xs relative">
+                     <button 
+                         onClick={() => setShowIframeWarn(false)} 
+                         className="absolute top-3 right-3 p-1 text-blue-400 hover:text-blue-600 rounded-full hover:bg-blue-100/50 transition-colors cursor-pointer border-none bg-transparent"
+                         title="ปิดการแจ้งเตือน"
+                     >
+                         <X size={14} />
+                     </button>
+                     <div className="flex-1 pr-6">
+                         <h4 className="font-bold text-blue-800 text-sm flex items-center gap-1.5">
+                             💡 คำแนะนำสำหรับการทำรายการพิมพ์/แชร์บนมือถือ
+                         </h4>
+                         <p className="text-xs text-blue-700 mt-1 leading-relaxed">
+                             เนื่องจากท่านกำลังใช้งานผ่านระบบหน้าต่างจำลอง (iFrame) ใน AI Studio เพื่อประสิทธิภาพและหน้าตาใบเสนอราคาแบบ PDF ที่สวยงามถูกต้องสมบูรณ์แบบ 100% แนะนำให้กดปุ่มขวามือเพื่อเปิดในแท็บใหม่ จะแชร์หาลูกค้าได้สะดวกยิ่งขึ้นครับ
+                         </p>
+                     </div>
+                     <a 
+                         href={window.location.href} 
+                         target="_blank" 
+                         rel="noopener noreferrer" 
+                         className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-xs transition-all flex items-center gap-1.5 self-end md:self-auto cursor-pointer whitespace-nowrap"
+                     >
+                         <ExternalLink size={14} /> เปิดแท็บใหม่เพื่อพิมพ์/แชร์
+                     </a>
+                 </div>
+             )}
              
             <div className="mb-6 p-4 bg-gray-50 border border-gray-200 rounded-lg no-print">
                 <div className="flex items-center gap-4 flex-wrap">
@@ -848,22 +1229,31 @@ export default function App() {
                 </div>
             </div>
 
-             <table className="w-full print-table-wrapper text-sm font-sans">
+             {/* Responsive Scrollable Container to prevent table from overflowing on mobile viewports */}
+             <div className="w-full overflow-x-auto -mx-2 px-2 md:-mx-0 md:px-0 scrollbar-thin print:overflow-visible">
+                 <table id="quotation-print-sheet" className="w-full print-table-wrapper text-sm font-sans min-w-[700px] md:min-w-0 bg-white">
                 <thead className="print-header-group">
                     <tr>
                         <td colSpan={6}>
-                             <div className="flex justify-between items-start pb-4 border-b-2 border-gray-800 mb-4 pt-4">
-                                 <div><h1 className="text-2xl font-bold text-gray-800">ใบเสนอราคาผ้าม่านเบื้องต้น</h1><p className="text-gray-500 text-xs">Fast Track Quotation System</p></div>
-                                 <div className="text-right text-sm"><div className="font-bold text-base text-gray-850">{customer.name}</div><div>{customer.phone}</div><div className="max-w-[250px]">{customer.address}</div></div>
+                             <div className="flex flex-col sm:flex-row justify-between items-start gap-4 pb-4 border-b-2 border-gray-800 mb-4 pt-4">
+                                 <div>
+                                     <h1 className="text-xl md:text-2xl font-bold text-gray-800 font-sans">ใบเสนอราคาผ้าม่านเบื้องต้น</h1>
+                                     <p className="text-gray-500 text-xs">Fast Track Quotation System</p>
+                                 </div>
+                                 <div className="text-left sm:text-right text-sm">
+                                     <div className="font-bold text-base text-gray-800 font-sans">ลูกค้า: คุณ{customer.name}</div>
+                                     {customer.phone && <div className="text-gray-600">โทร: {customer.phone}</div>}
+                                     {customer.address && <div className="text-gray-500 max-w-[250px] text-xs mt-1 sm:ml-auto">{customer.address}</div>}
+                                 </div>
                              </div>
                         </td>
                     </tr>
-                    <tr className="bg-gray-100 text-gray-700 text-xs font-bold uppercase border-b border-gray-800">
-                        <th className="py-2 px-2 w-8 text-center no-print">เลือก</th>
-                        <th style={{width: '35%'}} className="py-2 px-4 text-left">รายการ</th>
-                        <th style={{width: '30%'}} className="py-2 px-4 text-left">รายละเอียด</th>
-                        <th style={{width: '20%', textAlign: 'center'}} className="py-2 px-4 text-center">ขนาด</th>
-                        <th style={{width: '15%', textAlign: 'right'}} className="py-2 px-4 text-right">ราคา</th>
+                    <tr className="bg-transparent text-gray-800 text-xs font-bold uppercase border-b-2 border-t border-gray-300">
+                        <th className="py-3 px-2 w-8 text-center no-print">เลือก</th>
+                        <th style={{width: '35%'}} className="py-3 px-4 text-left font-sans">รายการ</th>
+                        <th style={{width: '30%'}} className="py-3 px-4 text-left font-sans">รายละเอียด</th>
+                        <th style={{width: '20%', textAlign: 'center'}} className="py-3 px-4 text-center font-sans">ขนาด</th>
+                        <th style={{width: '15%', textAlign: 'right'}} className="py-3 px-4 text-right font-sans font-bold">ราคา</th>
                         <th className="no-print" style={{width: '5%'}}></th>
                     </tr>
                 </thead>
@@ -874,7 +1264,7 @@ export default function App() {
 
                           return (
                               <React.Fragment key={house}>
-                                  <tr className={`bg-gray-100/50 page-break ${!isHouseVisibleInPrint ? 'print:hidden' : ''}`}><td colSpan={6} className="font-bold text-base pt-4 pb-2 text-gray-800 px-2">{house}</td></tr>
+                                  <tr className={`bg-transparent border-b border-gray-250 page-break ${!isHouseVisibleInPrint ? 'print:hidden' : ''}`}><td colSpan={6} className="font-bold text-base pt-5 pb-2 text-gray-800 px-2 font-sans">{house}</td></tr>
                                   {Object.entries(roomsInHouse).map(([roomName, roomItems]: any) => {
                                       const roomIncludedItems = roomItems.filter((i: any) => !excludedItemIds.includes(i.id));
                                       const roomTotal = roomIncludedItems.reduce((sum: number, item: any) => sum + (item.calculated?.grandTotal || 0), 0);
@@ -883,9 +1273,9 @@ export default function App() {
 
                                       return (
                                           <React.Fragment key={roomName}>
-                                              <tr className={`bg-gray-50 page-break ${!isRoomVisibleInPrint ? 'print:hidden opacity-50' : ''}`}>
+                                              <tr className={`bg-transparent border-b border-gray-150 page-break ${!isRoomVisibleInPrint ? 'print:hidden opacity-50' : ''}`}>
                                                 <td className="text-center no-print align-middle"><input type="checkbox" checked={isRoomAllChecked} onChange={() => toggleRoomSelection(roomItems, isRoomAllChecked)} className="cursor-pointer w-4 h-4 text-theme-main"/></td>
-                                                <td colSpan={5} className="font-bold text-gray-700 py-1.5 px-4 border-b border-gray-200">{roomName}</td>
+                                                <td colSpan={5} className="font-bold text-gray-750 py-2 px-2 border-b border-gray-100 font-sans">{roomName}</td>
                                               </tr>
                                               {roomItems.map((item: any, idx: number) => {
                                                   const isExcluded = excludedItemIds.includes(item.id);
@@ -907,20 +1297,20 @@ export default function App() {
                                                       displayPrice = Math.ceil(item.calculated?.grandTotal || 0);
                                                   }
                                                   return (
-                                                      <tr key={item.id} className={`page-break border-b border-gray-100 ${isExcluded ? 'opacity-30 print:hidden bg-gray-50/50' : ''}`}>
-                                                          <td className="text-center no-print align-top py-2"><input type="checkbox" checked={!isExcluded} onChange={() => toggleItemSelection(item.id)} className="cursor-pointer w-4 h-4 text-theme-main"/></td>
-                                                          <td className="align-top py-2 px-4 font-medium">{idx + 1}. {typeText}</td>
-                                                          <td className="align-top py-2 px-4 text-xs text-gray-500 line-clamp-2">{details.join(' | ')}</td>
-                                                          <td className="align-top py-2 px-4 text-center text-xs">{!isOther && `${item.railWidth} x ${item.railHeight} ซม.`}{item.quantity > 1 && <div className="text-[10px] text-gray-400">x {item.quantity} {isOther ? 'รายการ' : 'ชุด'}</div>}</td>
-                                                          <td className="align-top py-2 px-4 text-right font-bold">{isExcluded ? <span className="line-through text-gray-300">{displayPrice.toLocaleString()}</span> : displayPrice.toLocaleString()}</td>
-                                                          <td className="align-top py-2 px-2 text-center no-print"><div className="flex gap-1 justify-center"><button onClick={()=>handleEditFromSummary(item)} className="text-blue-600 hover:bg-gray-100 p-1 rounded"><Edit size={14}/></button><button onClick={()=>handleRemoveFromSummary(item.id)} className="text-red-500 hover:bg-red-50 p-1 rounded"><Trash2 size={14}/></button></div></td>
+                                                      <tr key={item.id} className={`page-break border-b border-gray-100 ${isExcluded ? 'opacity-30 print:hidden bg-transparent' : 'bg-transparent'}`}>
+                                                          <td className="text-center no-print align-top py-2.5"><input type="checkbox" checked={!isExcluded} onChange={() => toggleItemSelection(item.id)} className="cursor-pointer w-4 h-4 text-theme-main"/></td>
+                                                          <td className="align-top py-2.5 px-4 font-medium font-sans">{idx + 1}. {typeText}</td>
+                                                          <td className="align-top py-2.5 px-4 text-xs text-gray-500 line-clamp-2 font-sans">{details.join(' | ')}</td>
+                                                          <td className="align-top py-2.5 px-4 text-center text-xs font-sans">{!isOther && `${item.railWidth} x ${item.railHeight} ซม.`}{item.quantity > 1 && <div className="text-[10px] text-gray-400">x {item.quantity} {isOther ? 'รายการ' : 'ชุด'}</div>}</td>
+                                                          <td className="align-top py-2.5 px-4 text-right font-bold font-sans">{isExcluded ? <span className="line-through text-gray-300">{displayPrice.toLocaleString()}</span> : displayPrice.toLocaleString()}</td>
+                                                          <td className="align-top py-2.5 px-2 text-center no-print"><div className="flex gap-1 justify-center"><button onClick={()=>handleEditFromSummary(item)} className="text-blue-600 hover:bg-gray-100 p-1.5 rounded cursor-pointer"><Edit size={14}/></button><button onClick={()=>handleRemoveFromSummary(item.id)} className="text-red-500 hover:bg-red-55 p-1.5 rounded cursor-pointer"><Trash2 size={14}/></button></div></td>
                                                       </tr>
                                                   );
                                               })}
-                                              <tr className={`border-t border-gray-300 font-bold bg-gray-50/20 ${!isRoomVisibleInPrint ? 'print:hidden' : ''}`}>
+                                              <tr className={`border-t border-gray-300 font-bold bg-transparent ${!isRoomVisibleInPrint ? 'print:hidden' : ''}`}>
                                                   <td className="no-print"></td>
-                                                  <td colSpan={3} className="text-right py-2 pr-4 text-xs text-gray-500 font-medium">รวมราคาห้อง {roomName}</td>
-                                                  <td className="text-right py-2 px-4">{Math.ceil(roomTotal).toLocaleString()}</td>
+                                                  <td colSpan={3} className="text-right py-2.5 pr-4 text-xs text-gray-500 font-medium font-sans">รวมราคาห้อง {roomName}</td>
+                                                  <td className="text-right py-2.5 px-4 font-sans font-bold">{Math.ceil(roomTotal).toLocaleString()}</td>
                                                   <td className="no-print"></td>
                                               </tr>
                                           </React.Fragment>
@@ -933,15 +1323,15 @@ export default function App() {
                 <tfoot className="print-footer-group">
                     <tr>
                         <td colSpan={6}>
-                             <div className="flex flex-col md:flex-row justify-between items-start mt-8 pt-6 border-t-2 border-gray-800 page-break gap-8 print:flex-row">
-                                 <div className="w-full md:w-1/2 text-left text-xs text-gray-500">
-                                    {customer.note && <div className="mb-4"><div className="font-bold text-gray-700 underline mb-1">เพิ่มเติม:</div><div className="p-2 border border-dashed border-gray-300 rounded text-sm text-gray-750 bg-gray-50">{customer.note}</div></div>}
-                                    <div className="text-[11px] text-gray-400 space-y-1">
-                                        <div className="font-bold text-gray-700 underline mb-1">หมายเหตุ:</div>
-                                        <ol className="list-decimal pl-4 space-y-1">
+                             <div className="flex flex-col md:flex-row justify-between items-start mt-8 pt-6 border-t border-gray-300 page-break gap-8 print:flex-row">
+                                 <div className="w-full md:w-1/2 text-left text-xs text-gray-500 font-sans">
+                                    {customer.note && <div className="mb-4"><div className="font-bold text-gray-700 underline mb-1 font-sans">เพิ่มเติม:</div><div className="p-2 border border-dashed border-gray-300 rounded text-sm text-gray-700 bg-gray-50 font-sans">{customer.note}</div></div>}
+                                    <div className="text-[11px] text-gray-400 space-y-1 font-sans">
+                                        <div className="font-bold text-gray-700 underline mb-1 font-sans">หมายเหตุ:</div>
+                                        <ol className="list-decimal pl-4 space-y-1 font-sans">
                                             <li>ราคาในใบเสนอราคาเบื้องต้นนี้รวมภาษีมูลค่าเพิ่ม 7% แล้ว</li>
                                             <li>ใบเสนอราคาเบื้องต้นนี้เป็นการคำนวณราคาเบื้องต้นเท่านั้น โปรดนัดคิวเจ้าหน้าที่เข้าวัดพื้นที่จริงเพื่อสรุปยอดคงเหลือ</li>
-                                        </ol>
+                               </ol>
                                     </div>
                                  </div>
                                  <div className="w-full md:w-80">
@@ -953,7 +1343,7 @@ export default function App() {
                                              <tr>
                                                  <td className="py-1 text-gray-600 flex items-center gap-2">
                                                      ส่วนลด On Top 
-                                                     <span className="no-print border px-1 text-xs bg-white rounded"><input type="number" className="w-8 text-center outline-none" value={ontopPercent} onChange={e=>setOntopPercent(parseFloat(e.target.value)||0)}/>%</span>
+                                                     <span className="no-print border px-1 text-xs bg-white rounded"><input type="number" className="w-8 text-center outline-none" value={ontopPercent === 0 ? '' : ontopPercent} onChange={e=>setOntopPercent(e.target.value === '' ? 0 : parseFloat(e.target.value)||0)}/>%</span>
                                                      <span className="print-only ml-1">({ontopPercent}%)</span>
                                                  </td>
                                                  <td className="py-1 text-right text-red-500">-{Math.floor(summaryTotals.ontopAmount).toLocaleString()}</td>
@@ -968,15 +1358,27 @@ export default function App() {
                     </tr>
                 </tfoot>
              </table>
-             <div className="mt-10 flex justify-center gap-4 no-print pb-10">
-                 <button onClick={() => setAppState('editor')} className="px-6 py-2 rounded-lg bg-gray-100 text-gray-650 hover:bg-gray-200 transition-colors">กลับไปแก้ไข</button>
-                 <button onClick={handlePrintDraft} className="px-6 py-2 rounded-lg bg-gray-600 text-white shadow hover:bg-gray-700 flex items-center gap-2 transition-colors"><Printer size={18}/> พิมพ์ (Draft)</button>
-                 <button onClick={() => window.print()} className="px-6 py-2 rounded-lg bg-blue-700 text-white shadow hover:bg-blue-800 flex items-center gap-2 transition-colors"><Printer size={18}/> พิมพ์สรุปใบเสนอราคา</button>
+             </div>
+             {/* Sticky Bottom Actions inside the Summary screen for mobile (above bottom navigation menu) */}
+             <div className="no-print md:hidden fixed bottom-16 left-0 right-0 z-40 bg-white/95 backdrop-blur border-t p-3 flex flex-row gap-3 shadow-lg max-w-[1920px] mx-auto">
+                 <button onClick={() => setAppState('editor')} className="flex-1 py-3 px-2 rounded-xl bg-gray-100 text-gray-750 font-bold text-xs flex items-center justify-center gap-1 cursor-pointer font-sans">
+                     <ArrowLeft size={14}/> แก้ไขข้อมูล
+                 </button>
+                 <button onClick={handleSharePDF} className="flex-1 py-3 px-3 rounded-xl bg-blue-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md cursor-pointer font-sans font-bold">
+                     <Printer size={14}/> แชร์ไฟล์ PDF
+                 </button>
+             </div>
+
+             <div className="mt-10 hidden md:flex justify-center gap-4 no-print pb-10">
+                 <button onClick={() => setAppState('editor')} className="px-6 py-2 rounded-lg bg-gray-100 text-gray-650 hover:bg-gray-200 transition-colors cursor-pointer font-sans">กลับไปแก้ไข</button>
+                 <button onClick={handlePrintDraft} className="px-6 py-2 rounded-lg bg-gray-600 text-white shadow hover:bg-gray-700 flex items-center gap-2 transition-colors cursor-pointer font-sans"><Printer size={18}/> พิมพ์ (Draft)</button>
+                 <button onClick={() => window.print()} className="px-6 py-2 rounded-lg bg-blue-700 text-white shadow hover:bg-blue-800 flex items-center gap-2 transition-colors cursor-pointer font-sans"><Printer size={18}/> พิมพ์สรุปใบเสนอราคา</button>
              </div>
         </div>
       ) : (
-        <div className="flex-1 flex flex-col lg:flex-row p-4 gap-4 overflow-hidden max-w-[1920px] mx-auto w-full font-sans">
-            <div className={`w-full lg:w-72 flex flex-col gap-4 flex-shrink-0 bg-white lg:bg-transparent z-20 ${isHouseListCollapsed ? 'h-14 overflow-hidden' : 'h-auto lg:h-full overflow-hidden'}`}>
+        <>
+        <div className="flex-1 flex flex-col lg:flex-row p-4 pb-24 lg:pb-4 gap-4 overflow-hidden max-w-[1920px] mx-auto w-full font-sans">
+            <div className={`w-full lg:w-72 flex flex-col gap-4 flex-shrink-0 bg-white lg:bg-transparent z-20 ${activeMobileTab === 'area' ? 'flex' : 'hidden lg:flex'} ${isHouseListCollapsed ? 'h-14 overflow-hidden' : 'h-auto lg:h-full overflow-hidden'}`}>
                 <div className="lg:hidden flex justify-between items-center bg-blue-50 p-2 rounded-lg mb-2 cursor-pointer" onClick={() => setIsHouseListCollapsed(!isHouseListCollapsed)}>
                     <span className="font-bold text-blue-800 flex items-center gap-2"><MapPin size={18}/> เลือกบ้าน/ห้อง</span>
                     {isHouseListCollapsed ? <ChevronDown size={20}/> : <ChevronUp size={20}/>}
@@ -1000,7 +1402,7 @@ export default function App() {
                 <Card className="flex-[2]" title={selectedHouse ? `2. ห้องใน ${selectedHouse}` : '2. รายการห้อง'} icon={LayoutGrid} action={selectedHouse && <button onClick={handleAddRoom} className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded hover:bg-green-200"><Plus size={12}/> เพิ่มห้อง</button>}>
                     <div className="p-2 overflow-y-auto space-y-1 h-full bg-gray-50/50">
                         {!selectedHouse ? <div className="text-center text-gray-400 py-10 text-xs">เลือกบ้านก่อน</div> : availableRooms.length === 0 ? <div className="text-center text-gray-400 py-10 text-xs">ยังไม่มีห้อง กดเพิ่มห้อง</div> : availableRooms.map(room => (
-                            <div key={room} className={`group w-full flex items-center justify-between px-3 py-2 rounded-lg border transition-all cursor-pointer ${selectedRoom === room ? 'bg-green-50 border-green-500 text-green-800 font-bold shadow-sm' : 'bg-white border-gray-200 hover:border-green-300 text-gray-600'}`} onClick={() => setSelectedRoom(room)}>
+                            <div key={room} className={`group w-full flex items-center justify-between px-3 py-2 rounded-lg border transition-all cursor-pointer ${selectedRoom === room ? 'bg-green-50 border-green-500 text-green-800 font-bold shadow-sm' : 'bg-white border-gray-200 hover:border-green-300 text-gray-600'}`} onClick={() => { setSelectedRoom(room); if (window.innerWidth < 1024) setActiveMobileTab('spec'); }}>
                                 <span className="text-sm truncate">{room}</span>
                                 <div className="flex items-center gap-1 flex-shrink-0">
                                     <button onClick={(e) => { e.stopPropagation(); handleEditName('room', room); }} className="p-1 text-gray-300 hover:text-blue-500"><Edit size={12}/></button>
@@ -1017,7 +1419,7 @@ export default function App() {
                 </Card>
             </div>
             
-            <div className="flex-1 flex flex-col gap-4 overflow-y-auto min-h-0">
+            <div className={`flex-1 flex flex-col gap-4 overflow-y-auto min-h-0 ${activeMobileTab !== 'area' ? 'flex' : 'hidden lg:flex'}`}>
                 <div className="bg-white border border-blue-100 shadow-sm rounded-lg p-3 flex justify-between items-center flex-none">
                      <div className="flex items-center gap-3">
                          <div className="bg-blue-50 p-2 rounded-full theme-text-action"><User size={20}/></div>
@@ -1026,15 +1428,18 @@ export default function App() {
                      <button onClick={()=>setAppState('customer_form')} className="text-xs theme-text-action hover:text-blue-700 flex items-center gap-1 font-semibold"><Edit size={14}/> แก้ไขข้อมูลลูกค้า</button>
                 </div>
                 {!selectedHouse || !selectedRoom ? (
-                    <div className="flex-1 bg-white border border-dashed border-gray-300 rounded-lg flex items-center justify-center flex-col text-gray-400 p-10">
-                        <Home size={48} className="mb-4 opacity-50 text-blue-900"/>
-                        <p className="font-bold text-sm text-gray-700">กรุณาเลือกชื่อ 'บ้าน' และ 'ห้อง' จากคอลัมน์ด้านซ้ายมือ</p>
-                        <p className="text-xs mt-1">เพื่อเริ่มสร้างรายการผ้าม่านและอุปกรณ์เสริมสเปกจริง</p>
+                    <div className="flex-1 bg-white border border-dashed border-gray-300 rounded-lg flex items-center justify-center flex-col text-gray-400 p-8 text-center font-sans">
+                        <Home size={40} className="mb-3 opacity-60 text-blue-800"/>
+                        <p className="font-bold text-sm text-gray-700">กรุณาเลือกชื่อ 'บ้าน' และ 'ห้อง' ก่อน</p>
+                        <p className="text-xs text-gray-500 mt-1 max-w-xs leading-relaxed">จากคอลัมน์พื้นที่ เพื่อดำเนินการจัดทำราคาสินค้าหรือคำนวณสเปก</p>
+                        <button onClick={() => setActiveMobileTab('area')} className="mt-4 px-4 py-2 bg-blue-600 text-white text-xs font-bold rounded-lg shadow hover:bg-blue-700 transition-colors cursor-pointer font-sans">
+                            ไปหน้าเลือกพื้นที่ (บ้าน/ห้อง)
+                        </button>
                     </div>
                 ) : (
                     <>
                         {itemsInCurrentRoom.length > 0 && (
-                            <div className="bg-white border border-blue-100 rounded-lg overflow-hidden flex-none">
+                            <div className={`bg-white border border-blue-100 rounded-lg overflow-hidden flex-none ${activeMobileTab === 'items' ? 'block' : 'hidden lg:block'}`}>
                                 <div className="bg-blue-50 px-4 py-2 font-bold text-blue-800 text-sm">รายการสินค้าในห้อง "{selectedRoom}"</div>
                                 <div className="divide-y divide-gray-100 max-h-40 overflow-y-auto">
                                     {itemsInCurrentRoom.map(item => (
@@ -1046,8 +1451,18 @@ export default function App() {
                                             <div className="flex items-center gap-4">
                                                 <div className="font-bold text-blue-700">{item.calculated?.grandTotal.toLocaleString()} บาท</div>
                                                 <div className="flex gap-1 items-center">
-                                                    <button onClick={() => {setEditingItemId(item.id); setCurrentItem(item);}} className="p-1 bg-gray-100 hover:bg-blue-50 hover:text-blue-600 rounded" title="แก้ไข"><Edit size={13}/></button>
-                                                    <button onClick={() => {if(confirm('ยืนยันลบรายการนี้?')) setItems(items.filter(x=>x.id!==item.id))}} className="p-1 bg-gray-100 hover:bg-red-50 hover:text-red-500 rounded" title="ลบ"><Trash2 size={13}/></button>
+                                                    <button onClick={() => {
+                                                        setEditingItemId(item.id); 
+                                                        setCurrentItem(sanitizeItem(item));
+                                                        setActiveMobileTab('spec');
+                                                    }} className="p-1 bg-gray-100 hover:bg-blue-50 hover:text-blue-600 rounded" title="แก้ไข"><Edit size={13}/></button>
+                                                    <button onClick={() => {
+                                                        setDeleteConfirm({
+                                                            title: 'ยืนยันการลบรายการสินค้า',
+                                                            message: 'คุณต้องการลบรายการสินค้านี้ใช่หรือไม่?',
+                                                            onConfirm: () => setItems(items => items.filter(x => x.id !== item.id))
+                                                        });
+                                                    }} className="p-1 bg-gray-100 hover:bg-red-50 hover:text-red-500 rounded" title="ลบ"><Trash2 size={13}/></button>
                                                     <div className="flex flex-col ml-1">
                                                         <button onClick={() => handleMoveItem(item.id, -1)} className="p-0.5 hover:text-blue-600 text-gray-300" title="เลื่อนขึ้น"><ArrowUp size={11}/></button>
                                                         <button onClick={() => handleMoveItem(item.id, 1)} className="p-0.5 hover:text-blue-600 text-gray-300" title="เลื่อนลง"><ArrowDown size={11}/></button>
@@ -1059,7 +1474,7 @@ export default function App() {
                                 </div>
                             </div>
                         )}
-                        <div className="bg-white border border-gray-200 rounded-lg shadow-sm flex-1">
+                        <div className={`bg-white border border-gray-200 rounded-lg shadow-sm flex-1 ${activeMobileTab === 'spec' ? 'block' : 'hidden lg:block'}`}>
                             <div className="bg-gray-50 px-6 py-3.5 border-b border-gray-200 flex justify-between items-center">
                                 <h2 className="text-base font-bold text-gray-800 flex items-center gap-2">
                                     {editingItemId ? <Edit size={18} className="text-orange-500"/> : <Plus size={18} className="text-blue-600"/>} 
@@ -1129,9 +1544,9 @@ export default function App() {
                                                     <label className="label">ราคาต่อหน่วย</label>
                                                     <input 
                                                         type="number" 
-                                                        className="std-input w-full" 
-                                                        value={currentItem.customPrice} 
-                                                        onChange={e=>setCurrentItem({...currentItem, customPrice: parseFloat(e.target.value)||0})} 
+                                                        className="std-input w-full bg-white" 
+                                                        value={currentItem.customPrice ?? ''} 
+                                                        onChange={e=>setCurrentItem({...currentItem, customPrice: e.target.value})} 
                                                         disabled={OTHER_EXPENSES.find(e=>e.id===currentItem.otherExpenseType)?.fixed}
                                                     />
                                                 </div>
@@ -1175,11 +1590,11 @@ export default function App() {
                                         <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
                                             <div>
                                                 <label className="label">กว้าง (ซม.)</label>
-                                                <input type="number" className="std-input w-full text-center" value={currentItem.railWidth} onChange={e=>setCurrentItem({...currentItem, railWidth: parseFloat(e.target.value)||0})} />
+                                                <input type="number" className="std-input w-full text-center bg-white" value={currentItem.railWidth ?? ''} onChange={e=>setCurrentItem({...currentItem, railWidth: e.target.value})} />
                                             </div>
                                             <div>
                                                 <label className="label">สูง (ซม.)</label>
-                                                <input type="number" className="std-input w-full text-center" value={currentItem.railHeight} onChange={e=>setCurrentItem({...currentItem, railHeight: parseFloat(e.target.value)||0})} />
+                                                <input type="number" className="std-input w-full text-center bg-white" value={currentItem.railHeight ?? ''} onChange={e=>setCurrentItem({...currentItem, railHeight: e.target.value})} />
                                             </div>
                                             <div>
                                                 {!['roller', 'venetian'].includes(currentItem.curtainStyle) ? (
@@ -1193,7 +1608,7 @@ export default function App() {
                                             </div>
                                             <div>
                                                 <label className="label">จำนวนชุด</label>
-                                                <input type="number" className="std-input w-full text-center font-bold text-blue-800 bg-white" value={currentItem.quantity} onChange={e=>setCurrentItem({...currentItem, quantity: parseInt(e.target.value)||1})} />
+                                                <input type="number" className="std-input w-full text-center font-bold text-blue-800 bg-white" value={currentItem.quantity ?? ''} onChange={e=>setCurrentItem({...currentItem, quantity: e.target.value})} />
                                             </div>
                                         </div>
                                         {['pleated', 'wave', 'wave_tape'].includes(currentItem.curtainStyle) && (
@@ -1229,7 +1644,7 @@ export default function App() {
                                                                     />
                                                                     <span>{acc.name} ({acc.price} บาท)</span>
                                                                 </label>
-                                                                {isSelected && <input type="number" min="1" className="w-12 p-1 text-center border rounded text-[11px] bg-white text-gray-800" value={currentQty} onChange={(e) => { const newAccs = currentItem.extraAccessories.map(x => x.id === acc.id ? { ...x, qty: parseInt(e.target.value)||1 } : x); setCurrentItem({ ...currentItem, extraAccessories: newAccs }); }}/>}
+                                                                {isSelected && <input type="number" min="1" className="w-12 p-1 text-center border rounded text-[11px] bg-white text-gray-800" value={currentQty ?? ''} onChange={(e) => { const newAccs = currentItem.extraAccessories.map(x => x.id === acc.id ? { ...x, qty: e.target.value } : x); setCurrentItem({ ...currentItem, extraAccessories: newAccs }); }}/>}
                                                             </div>
                                                         ); 
                                                     })}
@@ -1245,17 +1660,17 @@ export default function App() {
                                     <div className="p-4 grid grid-cols-2 md:grid-cols-5 gap-4">
                                         {currentItem.curtainType !== 'อื่นๆ' && (
                                             <>
-                                                <div><label className="label">ส่วนลดผ้า (%)</label><input type="number" className="std-input w-full text-red-600 font-bold" value={currentItem.discFabric} onChange={e=>setCurrentItem({...currentItem, discFabric: parseFloat(e.target.value)||0})}/></div>
-                                                <div><label className="label">ส่วนลดเย็บ (%)</label><input type="number" className="std-input w-full text-red-600 font-bold" value={currentItem.discSew} onChange={e=>setCurrentItem({...currentItem, discSew: parseFloat(e.target.value)||0})}/></div>
-                                                <div><label className="label">ส่วนลดราง (%)</label><input type="number" className="std-input w-full text-red-600 font-bold" value={currentItem.discRail} onChange={e=>setCurrentItem({...currentItem, discRail: parseFloat(e.target.value)||0})}/></div>
-                                                <div><label className="label">ส่วนลดอุปกรณ์ (%)</label><input type="number" className="std-input w-full text-red-600 font-bold" value={currentItem.discAcc} onChange={e=>setCurrentItem({...currentItem, discAcc: parseFloat(e.target.value)||0})}/></div>
+                                                <div><label className="label">ส่วนลดผ้า (%)</label><input type="number" className="std-input w-full text-red-600 font-bold bg-white font-mono" value={currentItem.discFabric ?? ''} onChange={e=>setCurrentItem({...currentItem, discFabric: e.target.value})}/></div>
+                                                <div><label className="label">ส่วนลดเย็บ (%)</label><input type="number" className="std-input w-full text-red-600 font-bold bg-white font-mono" value={currentItem.discSew ?? ''} onChange={e=>setCurrentItem({...currentItem, discSew: e.target.value})}/></div>
+                                                <div><label className="label">ส่วนลดราง (%)</label><input type="number" className="std-input w-full text-red-600 font-bold bg-white font-mono" value={currentItem.discRail ?? ''} onChange={e=>setCurrentItem({...currentItem, discRail: e.target.value})}/></div>
+                                                <div><label className="label">ส่วนลดอุปกรณ์ (%)</label><input type="number" className="std-input w-full text-red-600 font-bold bg-white font-mono" value={currentItem.discAcc ?? ''} onChange={e=>setCurrentItem({...currentItem, discAcc: e.target.value})}/></div>
                                             </>
                                         )}
                                         {currentItem.curtainType === 'อื่นๆ' && (
                                             <>
-                                                <div className="col-span-2 md:col-span-4"><label className="label">ปริมาณ (รายการ)</label><input type="number" className="std-input w-full text-center font-bold text-blue-800" value={currentItem.quantity} onChange={e=>setCurrentItem({...currentItem, quantity: parseInt(e.target.value)||1})} /></div>
+                                                <div className="col-span-2 md:col-span-4"><label className="label">ปริมาณ (รายการ)</label><input type="number" className="std-input w-full text-center font-bold text-blue-800 bg-white" value={currentItem.quantity ?? ''} onChange={e=>setCurrentItem({...currentItem, quantity: e.target.value})} /></div>
                                                 {currentItem.otherExpenseType === 'other' && (
-                                                    <div><label className="label">ส่วนลดพิเศษ (%)</label><input type="number" className="std-input w-full text-red-600 font-bold" value={currentItem.customDiscount || 0} onChange={e=>setCurrentItem({...currentItem, customDiscount: parseFloat(e.target.value)||0})}/></div>
+                                                    <div><label className="label">ส่วนลดพิเศษ (%)</label><input type="number" className="std-input w-full text-red-600 font-bold bg-white font-mono" value={currentItem.customDiscount ?? ''} onChange={e=>setCurrentItem({...currentItem, customDiscount: e.target.value})}/></div>
                                                 )}
                                             </>
                                         )}
@@ -1284,9 +1699,9 @@ export default function App() {
                                     <div className="bg-gray-50 p-4 border-t border-gray-200 flex justify-between items-center gap-4">
                                         <div>
                                             <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">ราคาสุทธิ (รวมราคาตัดเย็บ + อุปกรณ์ และส่วนลดแล้ว)</div>
-                                            <div className="text-2xl font-bold text-blue-700">{computedResult?.grandTotal.toLocaleString()} <span className="text-sm text-gray-450 font-normal">บาท</span></div>
+                                            <div className="text-2xl font-bold text-blue-700">{computedResult?.grandTotal.toLocaleString()} <span className="text-sm text-gray-500 font-normal">บาท</span></div>
                                         </div>
-                                        <button onClick={handleSaveItem} className="px-8 py-2 md:py-3 bg-green-650 hover:bg-green-700 transition-all rounded-lg text-white font-bold flex items-center gap-2 shadow-sm text-sm"><Save className="w-4 h-4"/> {editingItemId ? 'บันทึกแก้ไขรายการ' : 'เพิ่มลงในห้องนี้'}</button>
+                                        <button onClick={handleSaveItem} className="px-8 py-2 md:py-3 bg-green-600 hover:bg-green-700 transition-all rounded-lg text-white font-bold flex items-center gap-2 shadow-sm text-sm"><Save className="w-4 h-4"/> {editingItemId ? 'บันทึกแก้ไขรายการ' : 'เพิ่มลงในห้องนี้'}</button>
                                     </div>
                                 </section>
                             </div>
@@ -1295,16 +1710,78 @@ export default function App() {
                 )}
             </div>
         </div>
+
+        {/* Mobile Bottom Navigation Menu Bar for Editor */}
+        <div className="no-print lg:hidden fixed bottom-0 left-0 right-0 z-45 bg-white/95 backdrop-blur border-t flex flex-row justify-around py-3 shadow-[0_-2px_10px_rgba(0,0,0,0.05)] max-w-[1920px] mx-auto pb-safe">
+            <button 
+                onClick={() => setActiveMobileTab('area')}
+                className={`flex flex-col items-center justify-center gap-1 cursor-pointer transition-colors ${activeMobileTab === 'area' ? 'theme-text-action font-bold' : 'text-gray-400'}`}
+            >
+                <MapPin size={20}/>
+                <span className="text-[10px] font-sans">1. เลือกพื้นที่</span>
+            </button>
+            <button 
+                onClick={() => setActiveMobileTab('spec')}
+                className={`flex flex-col items-center justify-center gap-1 cursor-pointer transition-colors ${activeMobileTab === 'spec' ? 'theme-text-action font-bold' : 'text-gray-400'}`}
+            >
+                <Ruler size={20}/>
+                <span className="text-[10px] font-sans">2. คำนวณสเปก</span>
+            </button>
+            <button 
+                onClick={() => setActiveMobileTab('items')}
+                className={`flex flex-col items-center justify-center gap-1 cursor-pointer transition-colors ${activeMobileTab === 'items' ? 'theme-text-action font-bold' : 'text-gray-400'}`}
+            >
+                <div className="relative">
+                    <LayoutGrid size={20}/>
+                    {itemsInCurrentRoom.length > 0 && (
+                        <span className="absolute -top-1.5 -right-2.5 bg-red-500 text-white text-[8px] font-bold px-1 py-0.5 rounded-full leading-none font-sans">{itemsInCurrentRoom.length}</span>
+                    )}
+                </div>
+                <span className="text-[10px] font-sans">3. สินค้าห้องนี้</span>
+            </button>
+            <button 
+                onClick={() => setAppState('summary')}
+                className="flex flex-col items-center justify-center gap-1 text-yellow-600 cursor-pointer"
+            >
+                <FileText size={20}/>
+                <span className="text-[10px] font-bold text-yellow-700 font-sans">4. สรุป/ใบเสนอราคา</span>
+            </button>
+        </div>
+        </>
       )}
 
       {/* --- Overlay Modals --- */}
+      {deleteConfirm && (
+        <Modal title={deleteConfirm.title} onClose={() => setDeleteConfirm(null)}>
+          <div className="py-2 text-sm font-sans flex flex-col gap-4">
+            <p className="text-gray-650 leading-relaxed text-sm">{deleteConfirm.message}</p>
+            <div className="flex justify-end gap-2 text-xs">
+              <button 
+                onClick={() => setDeleteConfirm(null)} 
+                className="px-4 py-2 border rounded border-gray-200 text-gray-500 font-semibold hover:bg-gray-50 cursor-pointer"
+              >
+                ยกเลิก
+              </button>
+              <button 
+                onClick={() => {
+                  deleteConfirm.onConfirm();
+                  setDeleteConfirm(null);
+                }} 
+                className="px-4 py-2 bg-red-600 text-white rounded font-bold hover:bg-red-700 shadow-sm cursor-pointer"
+              >
+                ยืนยันลบ
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
       {modal === 'database' && isAdmin && ( <Modal title="จัดการฐานข้อมูล (Admin)" onClose={()=>setModal(null)} maxWidth="max-w-4xl"><DatabaseEditor db={db} setDb={setDb} formulas={formulas} onSave={handleManualSaveDB} initialDb={INITIAL_DB}/></Modal> )}
       {modal === 'staff_manager' && isAdmin && ( <Modal title="จัดการพนักงาน (Admin)" onClose={()=>setModal(null)}><StaffManager staffList={staffList} setStaffList={setStaffList} onSave={handleUpdateStaff} adminId={ADMIN_ID}/></Modal> )}
       {modal === 'formulas' && isAdmin && ( <Modal title="จัดการสูตรคำนวณ (Admin)" onClose={()=>setModal(null)}><FormulaManager formulas={formulas} setFormulas={setFormulas} onSave={handleUpdateFormulas}/></Modal> )}
       {modal === 'theme' && isAdmin && ( <Modal title="จัดการสี/ธีม (Admin)" onClose={()=>setModal(null)}><ThemeManager theme={theme} setTheme={setTheme} onSave={handleUpdateTheme}/></Modal> )}
       {modal === 'cloud_save' && ( <Modal title="บันทึกข้อมูลออนไลน์" onClose={()=>setModal(null)}><div className="text-center py-6 font-sans"><div className="bg-blue-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 text-theme-main"><Cloud size={32}/></div><h3 className="text-lg font-bold mb-2">ตกลงบันทึกส่งข้อมูลขึ้นคลาวด์?</h3><p className="text-xs text-gray-500 mb-6 font-medium">ข้อมูลทั้งหมดจะถูกซิงค์เพื่อเปิดใช้งานในทุกๆ เครื่อง</p><button onClick={handleSaveToCloud} className="w-full bg-blue-750 text-white py-2.5 rounded-xl font-bold shadow-md hover:bg-blue-800 transition-colors">ตกลง บันทึกข้อมูลคลาวด์</button></div></Modal> )}
       {modal === 'add_house' && ( <Modal title="เพิ่มหลัง/บ้านใหม่" onClose={()=>setModal(null)}><input autoFocus className="w-full p-2 border rounded mb-4 text-sm font-sans" placeholder="ระบุเลขที่บ้านหรือรหัสหน้างาน..." value={inputText} onChange={e => setInputText(e.target.value)} onKeyDown={e => e.key === 'Enter' && confirmAddHouse()}/><div className="flex justify-end gap-2 text-xs"><button onClick={()=>setModal(null)} className="px-4 py-2 text-gray-500 font-medium">ยกเลิก</button><button onClick={confirmAddHouse} className="px-4 py-2 bg-blue-600 text-white rounded font-bold">ตกลง</button></div></Modal> )}
-      {modal === 'add_room' && ( <Modal title="เพิ่มห้องใหม่" onClose={()=>setModal(null)}><input autoFocus className="w-full p-2 border rounded mb-4 text-sm font-sans" placeholder="ระบุชื่อห้อง (เช่น ห้องรับแขก)..." value={inputText} onChange={e => setInputText(e.target.value)} onKeyDown={e => e.key === 'Enter' && confirmAddRoom()}/><div className="flex justify-end gap-2 text-xs"><button onClick={()=>setModal(null)} className="px-4 py-2 text-gray-500 font-medium">ยกเลิก</button><button onClick={confirmAddRoom} className="px-4 py-2 bg-green-650 text-white rounded font-bold">ตกลง</button></div></Modal> )}
+      {modal === 'add_room' && ( <Modal title="เพิ่มห้องใหม่" onClose={()=>setModal(null)}><input autoFocus className="w-full p-2 border rounded mb-4 text-sm font-sans" placeholder="ระบุชื่อห้อง (เช่น ห้องรับแขก)..." value={inputText} onChange={e => setInputText(e.target.value)} onKeyDown={e => e.key === 'Enter' && confirmAddRoom()}/><div className="flex justify-end gap-2 text-xs"><button onClick={()=>setModal(null)} className="px-4 py-2 text-gray-500 font-medium">ยกเลิก</button><button onClick={confirmAddRoom} className="px-4 py-2 bg-green-600 text-white rounded font-bold">ตกลง</button></div></Modal> )}
       {modal === 'edit_name' && editTarget && (
         <Modal title={editTarget.type === 'house' ? 'แก้ไขชื่อโครงการ_บ้าน' : 'แก้ไขชื่อห้อง'} onClose={()=>{setModal(null); setEditTarget(null);}}>
             <input 

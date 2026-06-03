@@ -1,1 +1,50 @@
 @import "tailwindcss";
+
+html, body, #root {
+  max-width: 100vw;
+  width: 100%;
+  overflow-x: hidden;
+  position: relative;
+  background-color: #f1f5f9;
+}
+
+/* Elevate contrast levels globally for text elements to prevent them from blending with backgrounds */
+.text-gray-400 {
+  color: #64748b !important; /* Shift gray-400 (very light grey) to Slate-500 (readable dark grey) */
+}
+.text-gray-500 {
+  color: #475569 !important; /* Shift gray-500 to Slate-600 */
+}
+.text-gray-600 {
+  color: #334155 !important; /* Shift gray-600 to Slate-700 */
+}
+.text-gray-750 {
+  color: #0f172a !important; /* Make this a deep slate black */
+}
+.text-gray-700 {
+  color: #1e293b !important; /* Shift gray-700 to Slate-800 */
+}
+.text-gray-800 {
+  color: #0f172a !important; /* Shift gray-800 to Slate-900 (deep black) */
+}
+
+/* Ensure placeholder visibility */
+input::placeholder {
+  color: #94a3b8 !important;
+}
+
+/* Make sure scrollbars display cleanly inside the responsive table container */
+.scrollbar-thin::-webkit-scrollbar {
+  height: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 3px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
