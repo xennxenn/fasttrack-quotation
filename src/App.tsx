@@ -553,11 +553,11 @@ export default function App() {
   };
   
   const generatePDFBlob = async (): Promise<{ blob: Blob; filename: string } | null> => {
-    const pageElements = document.querySelectorAll('.printable-page-a4');
-    if (pageElements.length === 0) return null;
+    const originalTable = document.getElementById('quotation-print-sheet');
+    if (!originalTable) return null;
     
     setIsGeneratingPDF(true);
-    
+
     // 1. Temporary style overrides for `<style>` blocks in the document to prevent html2canvas OKLCH crash
     const tempStyleOverrides: { element: HTMLStyleElement; originalText: string }[] = [];
     document.querySelectorAll('style').forEach(styleEl => {
@@ -615,20 +615,217 @@ export default function App() {
             }
         });
     } as any;
-    
+
+    // Create a temporary off-screen container for crisp, complete desktop-width rendering (fixing mobile column truncation)
+    const printContainer = document.createElement('div');
+    printContainer.style.position = 'fixed';
+    printContainer.style.left = '-9999px';
+    printContainer.style.top = '0';
+    printContainer.style.width = '210mm'; // Standard A4 Width in CSS
+    printContainer.style.zIndex = '-9999';
+    printContainer.style.opacity = '1';
+    printContainer.style.backgroundColor = '#f3f4f6';
+    document.body.appendChild(printContainer);
+
+    // Extract table key rows and structures
+    const headerRow = originalTable.querySelector('thead tr:first-child');
+    const colHeaderRow = originalTable.querySelector('thead tr:nth-child(2)');
+    const bodyRows = Array.from(originalTable.querySelectorAll('tbody tr')).filter(row => {
+        return !row.classList.contains('print:hidden');
+    });
+    const footerElement = document.getElementById('quotation-print-footer');
+
+    // Create Page Builder helper
+    const createNewPageElement = (pageNumber: number): { pageNode: HTMLElement, tbodyNode: HTMLElement } => {
+        const pageDiv = document.createElement('div');
+        pageDiv.className = 'printable-page-a4';
+        pageDiv.style.width = '210mm';
+        pageDiv.style.height = 'auto'; // Auto during calculation so we can measure scroll height
+        pageDiv.style.padding = '15mm'; // Beautiful, normal standard margins
+        pageDiv.style.boxSizing = 'border-box';
+        pageDiv.style.backgroundColor = '#ffffff';
+        pageDiv.style.position = 'relative';
+        pageDiv.style.display = 'flex';
+        pageDiv.style.flexDirection = 'column';
+
+        const table = document.createElement('table');
+        table.className = 'w-full text-sm font-sans bg-white';
+        table.style.borderCollapse = 'collapse';
+        table.style.width = '100%';
+
+        const thead = document.createElement('thead');
+        
+        // Append duplicated top header (Title, custom info, etc.)
+        if (headerRow) {
+            const clonedHeader = headerRow.cloneNode(true) as HTMLElement;
+            clonedHeader.querySelectorAll('.no-print').forEach(el => el.remove());
+            
+            // Set colspan for table to 4 (since we ignore 2 no-print columns: selection checkbox and action button)
+            const cells = clonedHeader.querySelectorAll('td, th');
+            cells.forEach(cell => {
+                cell.setAttribute('colspan', '4');
+                cell.setAttribute('colSpan', '4');
+            });
+            thead.appendChild(clonedHeader);
+        }
+
+        // Append duplicated column headings (รายการ, รายละเอียด, ขนาด, ราคา)
+        if (colHeaderRow) {
+            const clonedColHeader = colHeaderRow.cloneNode(true) as HTMLElement;
+            clonedColHeader.querySelectorAll('.no-print').forEach(el => el.remove());
+            thead.appendChild(clonedColHeader);
+        }
+
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        table.appendChild(tbody);
+        pageDiv.appendChild(table);
+
+        // Footer page number element
+        const pageNumDiv = document.createElement('div');
+        pageNumDiv.className = 'absolute bottom-4 right-8 text-[10px] text-gray-400 font-sans';
+        pageNumDiv.innerHTML = `หน้า ${pageNumber}`;
+        pageDiv.appendChild(pageNumDiv);
+
+        return { pageNode: pageDiv, tbodyNode: tbody };
+    };
+
+    let currentPageNum = 1;
+    let currentLayout = createNewPageElement(currentPageNum);
+    printContainer.appendChild(currentLayout.pageNode);
+
+    // Style override block to apply exact high-quality printable styles inside our generator
+    const styleOverride = document.createElement('style');
+    styleOverride.innerHTML = `
+        .printable-page-a4 {
+            font-family: "Sarabun", "Inter", sans-serif !important;
+            letter-spacing: normal !important;
+            word-spacing: normal !important;
+        }
+        .printable-page-a4 table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+        }
+        .printable-page-a4 th, .printable-page-a4 td {
+            font-family: "Sarabun", "Inter", sans-serif !important;
+            font-size: 13px !important;
+            padding: 10px 12px !important;
+            line-height: 1.5 !important;
+            color: #0f172a !important;
+            background-color: transparent !important;
+            vertical-align: middle !important;
+        }
+        .printable-page-a4 th {
+            border-bottom: 2px solid #0f172a !important;
+            border-top: 1px solid #e1e8f0 !important;
+            font-weight: bold !important;
+            text-align: left !important;
+            vertical-align: middle !important;
+        }
+        .printable-page-a4 td {
+            border-bottom: 1px solid #f1f5f9 !important;
+            vertical-align: middle !important;
+        }
+        .printable-page-a4 .bg-transparent {
+            background-color: transparent !important;
+        }
+        .printable-page-a4 tr {
+            background: transparent !important;
+        }
+    `;
+    printContainer.appendChild(styleOverride);
+
+    // Max page height budget in pixels at 96 DPI (A4 height is 1122.5px. minus 2x30px padding is approx 1010px content space)
+    // We target 1010px height range for clean breaking
+    const MAX_PAGE_HEIGHT_PX = 1010;
+
+    // Distribute body rows nicely
+    for (let i = 0; i < bodyRows.length; i++) {
+        const originalRow = bodyRows[i];
+        const clonedRow = originalRow.cloneNode(true) as HTMLElement;
+        clonedRow.querySelectorAll('.no-print').forEach(el => el.remove());
+
+        // Adjust column cell counts for table spanning
+        clonedRow.querySelectorAll('td, th').forEach(cell => {
+            const span = cell.getAttribute('colSpan') || cell.getAttribute('colspan');
+            if (span) {
+                const val = parseInt(span, 10);
+                if (val >= 5) {
+                    cell.setAttribute('colspan', '4');
+                    cell.setAttribute('colSpan', '4');
+                }
+            }
+        });
+
+        // Add to current layout
+        currentLayout.tbodyNode.appendChild(clonedRow);
+
+        // Check offset height of current page container
+        if (currentLayout.pageNode.offsetHeight > MAX_PAGE_HEIGHT_PX) {
+            // Remove the overflowing row, start a new page, and append there
+            currentLayout.tbodyNode.removeChild(clonedRow);
+            
+            currentPageNum++;
+            currentLayout = createNewPageElement(currentPageNum);
+            printContainer.appendChild(currentLayout.pageNode);
+            
+            currentLayout.tbodyNode.appendChild(clonedRow);
+        }
+    }
+
+    // Append and format the footer elements (grand total, signatures, etc.)
+    if (footerElement) {
+        const clonedFooter = footerElement.cloneNode(true) as HTMLElement;
+        clonedFooter.querySelectorAll('.no-print').forEach(el => el.remove());
+
+        clonedFooter.style.width = '100%';
+        clonedFooter.style.marginTop = '1.5rem';
+
+        currentLayout.pageNode.appendChild(clonedFooter);
+
+        // If the footer overflows the final page, move it to its own page
+        if (currentLayout.pageNode.offsetHeight > MAX_PAGE_HEIGHT_PX) {
+            currentLayout.pageNode.removeChild(clonedFooter);
+            
+            currentPageNum++;
+            currentLayout = createNewPageElement(currentPageNum);
+            printContainer.appendChild(currentLayout.pageNode);
+            
+            currentLayout.pageNode.appendChild(clonedFooter);
+        }
+    }
+
+    // Apply the Watermarks and fix element heights to exactly 297mm (Standard A4) for html2canvas
+    const pages = printContainer.querySelectorAll('.printable-page-a4');
+    pages.forEach(page => {
+        const pageEl = page as HTMLElement;
+        pageEl.style.height = '297mm';
+        pageEl.style.overflow = 'hidden';
+
+        if (isDraftPrint) {
+            const watermark = document.createElement('div');
+            watermark.className = 'draft-watermark';
+            watermark.textContent = 'DRAFT';
+            pageEl.appendChild(watermark);
+        }
+    });
+
     try {
         const pdf = new jsPDF('p', 'mm', 'a4');
         
-        for (let i = 0; i < pageElements.length; i++) {
-            const pageEl = pageElements[i] as HTMLElement;
+        for (let i = 0; i < pages.length; i++) {
+            const pageEl = pages[i] as HTMLElement;
             
             const canvas = await html2canvas(pageEl, {
-                scale: 2,
+                scale: 2.5, // High definition scale for clean prints
                 useCORS: true,
                 backgroundColor: '#ffffff',
-                ignoreElements: (element) => {
-                    return element.classList.contains('no-print');
-                }
+                logging: false,
+                width: 793, // A4 standard width at 96 DPI
+                height: 1122, // A4 standard height at 96 DPI
+                scrollX: 0,
+                scrollY: 0
             });
             
             if (canvas.width === 0 || canvas.height === 0) {
@@ -640,15 +837,23 @@ export default function App() {
             if (i > 0) {
                 pdf.addPage();
             }
-            // A4 page dimensions in millimetres
             pdf.addImage(imgData, 'JPEG', 0, 0, 210, 297);
         }
         
         const blob = pdf.output('blob');
         const filename = `ใบเสนอราคา_คุณ${customer.name || 'ลูกค้า'}.pdf`;
+        
+        // Clean up temporary DOM nodes
+        if (printContainer.parentNode) {
+            document.body.removeChild(printContainer);
+        }
+        
         return { blob, filename };
     } catch (err) {
         console.error("PDF engine error:", err);
+        if (printContainer.parentNode) {
+            document.body.removeChild(printContainer);
+        }
         return null;
     } finally {
         // Restore window.getComputedStyle immediately
@@ -1069,13 +1274,13 @@ export default function App() {
       .border-blue-100, .border-blue-500 {
         border-color: color-mix(in srgb, var(--theme-main) 20%, white) !important;
       }
-      .hover\\:bg-blue-50:hover {
+      .hover\:bg-blue-50:hover {
         background-color: color-mix(in srgb, var(--theme-action) 8%, white) !important;
       }
-      .hover\\:bg-blue-200:hover {
+      .hover\:bg-blue-200:hover {
         background-color: color-mix(in srgb, var(--theme-action) 20%, white) !important;
       }
-      .hover\\:bg-blue-700:hover, .hover\\:bg-blue-800:hover {
+      .hover\:bg-blue-700:hover, .hover\:bg-blue-800:hover {
         background-color: var(--theme-main) !important;
       }
       .std-input {
@@ -1100,6 +1305,20 @@ export default function App() {
         margin-bottom: 0.375rem !important;
         margin-left: 0.25rem !important;
       }
+      .draft-watermark {
+        position: absolute; 
+        top: 50%; 
+        left: 50%; 
+        transform: translate(-50%, -50%) rotate(-35deg);
+        font-size: 130px; 
+        font-weight: 900; 
+        color: rgba(130, 130, 130, 0.08); 
+        letter-spacing: 12px; 
+        pointer-events: none; 
+        z-index: 50; 
+        display: block;
+        text-shadow: none !important;
+      }
       @media print {
         html, body, #root, .min-h-screen, .flex-col, .flex-1, .app-layout {
             height: auto !important;
@@ -1108,7 +1327,29 @@ export default function App() {
             display: block !important;
             position: relative !important;
             background: white !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            width: 100% !important;
         }
+        
+        /* Reset containers to match print layout width and remove margins/shadows/borders */
+        .max-w-5xl, div[class*="max-w-5xl"], #quotation-summary-container {
+            max-width: none !important;
+            width: 100% !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            border: none !important;
+            box-shadow: none !important;
+            border-radius: 0 !important;
+            background: white !important;
+        }
+
+        /* Prevent background coloring from being removed in print preview */
+        * {
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+        }
+
         .no-print { display: none !important; }
         .print-only { display: block !important; }
         body { background: white !important; color: black !important; margin: 0 !important; padding: 0 !important; }
@@ -1126,14 +1367,77 @@ export default function App() {
             box-sizing: border-box !important;
             background: white !important;
         }
+
+        /* Table breaking and repeating header controls */
+        table#quotation-print-sheet {
+            width: 100% !important;
+            border-collapse: collapse !important;
+            page-break-inside: auto !important;
+            break-inside: auto !important;
+        }
+
+        table#quotation-print-sheet th, table#quotation-print-sheet td {
+            font-family: "Sarabun", "Inter", sans-serif !important;
+            font-size: 13px !important;
+            padding: 10px 12px !important;
+            line-height: 1.5 !important;
+            color: #0f172a !important;
+            background-color: transparent !important;
+            vertical-align: middle !important;
+        }
+
+        table#quotation-print-sheet th {
+            border-bottom: 2px solid #0f172a !important;
+            border-top: 1px solid #e1e8f0 !important;
+            font-weight: bold !important;
+            text-align: left !important;
+            vertical-align: middle !important;
+            background-color: #f8fafc !important;
+        }
+
+        table#quotation-print-sheet td {
+            border-bottom: 1px solid #f1f5f9 !important;
+            vertical-align: middle !important;
+        }
+
+        thead {
+            display: table-header-group !important; /* Repeats thead on every printed page */
+        }
+
+        tfoot {
+            display: table-row-group !important; /* Forces the table footer to print cleanly only once at the end of the table rows */
+        }
+
+        .print-footer-group, tfoot tr {
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+        }
+
+        tr, .page-break {
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+        }
         
         .draft-watermark {
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-35deg);
-            font-size: 130px; font-weight: 900; color: rgba(130, 130, 130, 0.13) !important; letter-spacing: 12px; pointer-events: none; z-index: 9999; display: block !important;
+            position: fixed !important; 
+            top: 50% !important; 
+            left: 50% !important; 
+            transform: translate(-50%, -50%) rotate(-35deg) !important;
+            font-size: 140px !important; 
+            font-weight: 900 !important; 
+            color: rgba(130, 130, 130, 0.11) !important; 
+            letter-spacing: 12px !important; 
+            pointer-events: none !important; 
+            z-index: 9999 !important; 
+            display: block !important;
             text-shadow: none !important;
         }
         
-        @page { size: A4; margin: 0 !important; }
+        @page { 
+            size: A4; 
+            margin: 15mm !important; /* Standard standard margin padding */
+        }
+        }
       }
     `}} />
   );
@@ -1296,7 +1600,7 @@ export default function App() {
 
       {/* --- CONTENT SUMMARY OR EDITOR --- */}
       {appState === 'summary' ? (
-        <div className="p-4 md:p-8 max-w-5xl mx-auto w-full relative bg-white min-h-screen font-sans md:border md:shadow-md md:my-6 rounded-none md:rounded-xl pb-24 md:pb-16">
+        <div id="quotation-summary-container" className="p-4 md:p-8 max-w-5xl mx-auto w-full relative bg-white min-h-screen font-sans md:border md:shadow-md md:my-6 rounded-none md:rounded-xl pb-24 md:pb-16">
              {isDraftPrint && (<div className="draft-watermark">DRAFT</div>)}
              
              {typeof window !== 'undefined' && window.self !== window.top && showIframeWarn && (
@@ -1366,26 +1670,26 @@ export default function App() {
                 <thead className="print-header-group">
                     <tr>
                         <td colSpan={6}>
-                             <div className="flex flex-col sm:flex-row justify-between items-start gap-4 pb-4 border-b-2 border-gray-800 mb-4 pt-4">
-                                 <div>
-                                     <h1 className="text-xl md:text-2xl font-bold text-gray-800 font-sans">ใบเสนอราคาผ้าม่านเบื้องต้น</h1>
-                                     <p className="text-gray-500 text-xs">Fast Track Quotation System</p>
+                             <div className="flex justify-between items-start pb-4 border-b-2 border-gray-800 mb-4 pt-4 w-full">
+                                 <div className="text-left">
+                                     <h1 className="text-xl md:text-2xl font-bold text-gray-800 font-sans leading-none mb-1">ใบเสนอราคาผ้าม่านเบื้องต้น</h1>
+                                     <p className="text-gray-500 text-xs text-slate-400">Fast Track Quotation System</p>
                                  </div>
-                                 <div className="text-left sm:text-right text-sm">
-                                     <div className="font-bold text-base text-gray-800 font-sans">ลูกค้า: คุณ{customer.name}</div>
-                                     {customer.phone && <div className="text-gray-600">โทร: {customer.phone}</div>}
-                                     {customer.address && <div className="text-gray-500 max-w-[250px] text-xs mt-1 sm:ml-auto">{customer.address}</div>}
+                                 <div className="text-right text-sm">
+                                     <div className="font-bold text-base md:text-xl text-gray-900 font-sans tracking-tight leading-none mb-1">{customer.name}</div>
+                                     {customer.phone && <div className="text-gray-700 text-xs md:text-sm">{customer.phone}</div>}
+                                     {customer.address && <div className="text-gray-500 max-w-[280px] text-[11px] md:text-xs mt-1 ml-auto leading-relaxed">{customer.address}</div>}
                                  </div>
                              </div>
                         </td>
                     </tr>
-                    <tr className="bg-transparent text-gray-800 text-xs font-bold uppercase border-b-2 border-t border-gray-300">
-                        <th className="py-3 px-2 w-8 text-center no-print">เลือก</th>
-                        <th style={{width: '35%'}} className="py-3 px-4 text-left font-sans">รายการ</th>
-                        <th style={{width: '30%'}} className="py-3 px-4 text-left font-sans">รายละเอียด</th>
-                        <th style={{width: '20%', textAlign: 'center'}} className="py-3 px-4 text-center font-sans">ขนาด</th>
-                        <th style={{width: '15%', textAlign: 'right'}} className="py-3 px-4 text-right font-sans font-bold">ราคา</th>
-                        <th className="no-print" style={{width: '5%'}}></th>
+                    <tr className="bg-transparent text-gray-800 text-xs font-bold uppercase border-b-2 border-t border-gray-300 align-middle">
+                        <th className="py-3 px-2 w-8 text-center no-print align-middle">เลือก</th>
+                        <th style={{width: '35%'}} className="py-3 px-4 text-left align-middle font-sans text-sm">รายการ</th>
+                        <th style={{width: '30%'}} className="py-3 px-4 text-left align-middle font-sans text-sm">รายละเอียด</th>
+                        <th style={{width: '20%', textAlign: 'center'}} className="py-3 px-4 text-center align-middle font-sans text-sm">ขนาด</th>
+                        <th style={{width: '15%', textAlign: 'right'}} className="py-3 px-4 text-right align-middle font-sans font-bold text-sm">ราคา</th>
+                        <th className="no-print align-middle" style={{width: '5%'}}></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1395,7 +1699,9 @@ export default function App() {
 
                           return (
                               <React.Fragment key={house}>
-                                  <tr className={`bg-transparent border-b border-gray-250 page-break ${!isHouseVisibleInPrint ? 'print:hidden' : ''}`}><td colSpan={6} className="font-bold text-base pt-5 pb-2 text-gray-800 px-2 font-sans">{house}</td></tr>
+                                  <tr className={`bg-transparent border-b border-gray-250 page-break align-middle ${!isHouseVisibleInPrint ? 'print:hidden' : ''}`}>
+                                      <td colSpan={6} className="font-bold text-base pt-5 pb-2 text-gray-800 px-2 font-sans align-middle">{house}</td>
+                                  </tr>
                                   {Object.entries(roomsInHouse).map(([roomName, roomItems]: any) => {
                                       const roomIncludedItems = roomItems.filter((i: any) => !excludedItemIds.includes(i.id));
                                       const roomTotal = roomIncludedItems.reduce((sum: number, item: any) => sum + (item.calculated?.grandTotal || 0), 0);
@@ -1404,9 +1710,16 @@ export default function App() {
 
                                       return (
                                           <React.Fragment key={roomName}>
-                                              <tr className={`bg-transparent border-b border-gray-150 page-break ${!isRoomVisibleInPrint ? 'print:hidden opacity-50' : ''}`}>
-                                                <td className="text-center no-print align-middle"><input type="checkbox" checked={isRoomAllChecked} onChange={() => toggleRoomSelection(roomItems, isRoomAllChecked)} className="cursor-pointer w-4 h-4 text-theme-main"/></td>
-                                                <td colSpan={5} className="font-bold text-gray-750 py-2 px-2 border-b border-gray-100 font-sans">{roomName}</td>
+                                              <tr className={`bg-transparent border-b border-gray-150 page-break align-middle ${!isRoomVisibleInPrint ? 'print:hidden opacity-50' : ''}`}>
+                                                  <td className="text-center no-print align-middle">
+                                                      <input 
+                                                          type="checkbox" 
+                                                          checked={isRoomAllChecked} 
+                                                          onChange={() => toggleRoomSelection(roomItems, isRoomAllChecked)} 
+                                                          className="cursor-pointer w-4 h-4 text-theme-main"
+                                                      />
+                                                  </td>
+                                                  <td colSpan={5} className="font-bold text-gray-750 py-3 px-2 border-b border-gray-100 font-sans align-middle text-sm">{roomName}</td>
                                               </tr>
                                               {roomItems.map((item: any, idx: number) => {
                                                   const isExcluded = excludedItemIds.includes(item.id);
@@ -1424,26 +1737,39 @@ export default function App() {
                                                       typeText = `${formulas.find(s=>s.id===item.curtainStyle)?.label} (${item.curtainType})`;
                                                       if (fabric) details.push(`ผ้า: ${fabric.name} ${item.color ? `(สี ${item.color})` : ''}`);
                                                       if (rail) details.push(`ราง: ${rail.name} (${item.calculated?.railQty} ${rail.unit})`);
-                                                      if (accs) details.push(`อุปกรณ์: ${accs}`);
-                                                      displayPrice = Math.ceil(item.calculated?.grandTotal || 0);
+                                                      if (accs) details.push(`อุปกรณ์เสริม: ${accs}`);
+                                                      displayPrice = item.calculated?.grandTotal || 0;
                                                   }
+
                                                   return (
-                                                      <tr key={item.id} className={`page-break border-b border-gray-100 ${isExcluded ? 'opacity-30 print:hidden bg-transparent' : 'bg-transparent'}`}>
-                                                          <td className="text-center no-print align-top py-2.5"><input type="checkbox" checked={!isExcluded} onChange={() => toggleItemSelection(item.id)} className="cursor-pointer w-4 h-4 text-theme-main"/></td>
-                                                          <td className="align-top py-2.5 px-4 font-medium font-sans">{idx + 1}. {typeText}</td>
-                                                          <td className="align-top py-2.5 px-4 text-xs text-gray-500 line-clamp-2 font-sans">{details.join(' | ')}</td>
-                                                          <td className="align-top py-2.5 px-4 text-center text-xs font-sans">{!isOther && `${item.railWidth} x ${item.railHeight} ซม.`}{item.quantity > 1 && <div className="text-[10px] text-gray-400">x {item.quantity} {isOther ? 'รายการ' : 'ชุด'}</div>}</td>
-                                                          <td className="align-top py-2.5 px-4 text-right font-bold font-sans">{isExcluded ? <span className="line-through text-gray-300">{displayPrice.toLocaleString()}</span> : displayPrice.toLocaleString()}</td>
-                                                          <td className="align-top py-2.5 px-2 text-center no-print"><div className="flex gap-1 justify-center"><button onClick={()=>handleEditFromSummary(item)} className="text-blue-600 hover:bg-gray-100 p-1.5 rounded cursor-pointer"><Edit size={14}/></button><button onClick={()=>handleRemoveFromSummary(item.id)} className="text-red-500 hover:bg-red-55 p-1.5 rounded cursor-pointer"><Trash2 size={14}/></button></div></td>
+                                                      <tr key={item.id} className={`border-b border-gray-150 align-middle ${isExcluded ? 'print:hidden opacity-40 bg-gray-50' : 'bg-transparent hover:bg-slate-50'}`}>
+                                                          <td className="text-center no-print align-middle select-none">
+                                                              <input 
+                                                                  type="checkbox" 
+                                                                  checked={!isExcluded} 
+                                                                  onChange={() => toggleItemSelection(item.id)} 
+                                                                  className="cursor-pointer w-4 h-4 text-theme-main rounded focus:ring-blue-500" 
+                                                              />
+                                                          </td>
+                                                          <td className="py-3 px-4 font-sans font-medium text-gray-800 align-middle">
+                                                              <div className="font-bold">{typeText}</div>
+                                                          </td>
+                                                          <td className="py-3 px-4 font-sans text-xs text-gray-500 align-middle leading-relaxed">
+                                                              {details.map((detail, dIdx) => (
+                                                                  <div key={dIdx} className="font-sans text-gray-600">{detail}</div>
+                                                              ))}
+                                                          </td>
+                                                          <td className="py-3 px-4 text-center font-sans text-gray-700 align-middle whitespace-nowrap">
+                                                              {isOther ? '-' : `${item.railWidth} x ${item.railHeight} ซม.`}
+                                                          </td>
+                                                          <td className="py-3 px-4 text-right font-sans font-bold text-gray-900 align-middle">
+                                                              {Math.ceil(displayPrice).toLocaleString()}
+                                                          </td>
+                                                          <td className="no-print align-middle text-center">
+                                                          </td>
                                                       </tr>
                                                   );
                                               })}
-                                              <tr className={`border-t border-gray-300 font-bold bg-transparent ${!isRoomVisibleInPrint ? 'print:hidden' : ''}`}>
-                                                  <td className="no-print"></td>
-                                                  <td colSpan={3} className="text-right py-2.5 pr-4 text-xs text-gray-500 font-medium font-sans">รวมราคาห้อง {roomName}</td>
-                                                  <td className="text-right py-2.5 px-4 font-sans font-bold">{Math.ceil(roomTotal).toLocaleString()}</td>
-                                                  <td className="no-print"></td>
-                                              </tr>
                                           </React.Fragment>
                                       );
                                   })}
@@ -1451,44 +1777,44 @@ export default function App() {
                           );
                       })}
                 </tbody>
-                <tfoot className="print-footer-group">
-                    <tr>
-                        <td colSpan={6}>
-                             <div className="flex flex-col md:flex-row justify-between items-start mt-8 pt-6 border-t border-gray-300 page-break gap-8 print:flex-row">
-                                 <div className="w-full md:w-1/2 text-left text-xs text-gray-500 font-sans">
-                                    {customer.note && <div className="mb-4"><div className="font-bold text-gray-700 underline mb-1 font-sans">เพิ่มเติม:</div><div className="p-2 border border-dashed border-gray-300 rounded text-sm text-gray-700 bg-gray-50 font-sans">{customer.note}</div></div>}
-                                    <div className="text-[11px] text-gray-400 space-y-1 font-sans">
-                                        <div className="font-bold text-gray-700 underline mb-1 font-sans">หมายเหตุ:</div>
-                                        <ol className="list-decimal pl-4 space-y-1 font-sans">
-                                            <li>ราคาในใบเสนอราคาเบื้องต้นนี้รวมภาษีมูลค่าเพิ่ม 7% แล้ว</li>
-                                            <li>ใบเสนอราคาเบื้องต้นนี้เป็นการคำนวณราคาเบื้องต้นเท่านั้น โปรดนัดคิวเจ้าหน้าที่เข้าวัดพื้นที่จริงเพื่อสรุปยอดคงเหลือ</li>
-                               </ol>
-                                    </div>
-                                 </div>
-                                 <div className="w-full md:w-80">
-                                     <table className="w-full text-sm">
-                                         <tbody>
-                                             <tr><td className="py-1 text-gray-600">ราคารวม (รวมภาษี 7%)</td><td className="py-1 text-right font-medium">{Math.ceil(summaryTotals.totalBasePrice).toLocaleString()}</td></tr>
-                                             <tr><td className="py-1 text-gray-600">ส่วนลดรวม</td><td className="py-1 text-right text-red-500">-{Math.ceil(summaryTotals.totalItemDiscount).toLocaleString()}</td></tr>
-                                             <tr className="border-t"><td className="py-1 font-bold pt-2">ราคาหลังหักส่วนลด</td><td className="py-1 text-right font-bold pt-2">{Math.ceil(summaryTotals.totalNetPrice).toLocaleString()}</td></tr>
-                                             <tr>
-                                                 <td className="py-1 text-gray-600 flex items-center gap-2">
-                                                     ส่วนลด On Top 
-                                                     <span className="no-print border px-1 text-xs bg-white rounded"><input type="number" className="w-8 text-center outline-none" value={ontopPercent === 0 ? '' : ontopPercent} onChange={e=>setOntopPercent(e.target.value === '' ? 0 : parseFloat(e.target.value)||0)}/>%</span>
-                                                     <span className="print-only ml-1">({ontopPercent}%)</span>
-                                                 </td>
-                                                 <td className="py-1 text-right text-red-500">-{Math.floor(summaryTotals.ontopAmount).toLocaleString()}</td>
-                                             </tr>
-                                             <tr className="text-xl border-t-2 border-black font-bold "><td className="py-3 text-gray-950">ยอดสุทธิ</td><td className="py-3 text-right text-blue-900">{Math.ceil(summaryTotals.finalNet).toLocaleString()} บาท</td></tr>
-                                         </tbody>
-                                     </table>
-                                     <div className="mt-8 text-right text-sm text-gray-900 font-bold">ผู้เสนอราคา: {quoteOwner?.name || staff?.name}</div>
-                                 </div>
-                             </div>
-                        </td>
-                    </tr>
-                </tfoot>
              </table>
+             
+             {/* Notes and Calculations Block - Consolidate into a single section outside of table to avoid browser split bugs */}
+             <div id="quotation-print-footer" className="flex flex-col md:flex-row justify-between items-start mt-8 pt-6 border-t border-gray-300 page-break gap-8 print:flex-row bg-white">
+                 <div className="w-full md:w-1/2 text-left text-xs text-slate-650 font-sans">
+                    {customer.note && <div className="mb-4"><div className="font-bold text-slate-800 underline mb-1 font-sans">เพิ่มเติม:</div><div className="p-2 border border-dashed border-gray-300 rounded text-sm text-gray-700 bg-gray-50 font-sans">{customer.note}</div></div>}
+                    <div className="text-xs text-slate-700 space-y-1.5 font-sans mt-2">
+                        <div className="font-bold text-slate-800 underline mb-1.5 font-sans">หมายเหตุ:</div>
+                        <div className="flex items-start gap-1 font-sans">
+                            <span className="font-bold text-slate-700 shrink-0">1.</span>
+                            <span className="text-slate-650 font-medium">ราคาในใบเสนอราคาเบื้องต้นนี้รวมภาษีมูลค่าเพิ่ม 7% แล้ว</span>
+                        </div>
+                        <div className="flex items-start gap-1 font-sans">
+                            <span className="font-bold text-slate-700 shrink-0">2.</span>
+                            <span className="text-slate-650 font-medium font-sans">ใบเสนอราคาเบื้องต้นนี้เป็นการคำนวณราคาผ้าม่านเบื้องต้นเท่านั้น โปรดนัดคิวเจ้าหน้าที่เพื่อเข้าพื้นที่หน้างานสำหรับวัดพื้นที่จริง</span>
+                        </div>
+                    </div>
+                 </div>
+                 <div className="w-full md:w-80">
+                     <table className="w-full text-sm">
+                         <tbody>
+                             <tr><td className="py-1 text-gray-600 font-sans">ราคารวม (รวมภาษี 7%)</td><td className="py-1 text-right font-medium font-sans">{Math.ceil(summaryTotals.totalBasePrice).toLocaleString()}</td></tr>
+                             <tr><td className="py-1 text-gray-600 font-sans">ส่วนลดรวม</td><td className="py-1 text-right text-red-500 font-sans">-{Math.ceil(summaryTotals.totalItemDiscount).toLocaleString()}</td></tr>
+                             <tr className="border-t border-slate-200"><td className="py-1 font-bold pt-2 font-sans">ราคาหลังหักส่วนลด</td><td className="py-1 text-right font-bold pt-2 font-sans">{Math.ceil(summaryTotals.totalNetPrice).toLocaleString()}</td></tr>
+                             <tr>
+                                 <td className="py-1 text-gray-600 flex items-center gap-2 font-sans">
+                                     ส่วนลด On Top 
+                                     <span className="no-print border px-1 text-xs bg-white rounded"><input type="number" className="w-8 text-center outline-none" value={ontopPercent === 0 ? '' : ontopPercent} onChange={e=>setOntopPercent(e.target.value === '' ? 0 : parseFloat(e.target.value)||0)}/>%</span>
+                                     <span className="print-only ml-1">({ontopPercent}%)</span>
+                                 </td>
+                                 <td className="py-1 text-right text-red-500 font-sans">-{Math.floor(summaryTotals.ontopAmount).toLocaleString()}</td>
+                             </tr>
+                             <tr className="text-xl border-t-2 border-slate-800 font-bold "><td className="py-3 text-gray-950 font-sans">ยอดสุทธิ</td><td className="py-3 text-right text-blue-900 font-sans">{Math.ceil(summaryTotals.finalNet).toLocaleString()} บาท</td></tr>
+                         </tbody>
+                     </table>
+                     <div className="mt-8 text-right text-sm text-gray-900 font-bold font-sans">ผู้เสนอราคา: {quoteOwner?.name || staff?.name}</div>
+                 </div>
+             </div>
              </div>
              {/* Sticky Bottom Actions inside the Summary screen for mobile (above bottom navigation menu) */}
              <div className="no-print md:hidden fixed bottom-16 left-0 right-0 z-40 bg-white/95 backdrop-blur border-t p-3 flex flex-row gap-2 shadow-lg max-w-[1920px] mx-auto">
