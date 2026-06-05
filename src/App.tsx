@@ -1475,6 +1475,20 @@ export default function App() {
       );
   }
 
+  if (appState === 'customer_form') {
+      return (
+          <>
+              <StyleBlock />
+              <CustomerForm 
+                  customer={customer}
+                  setCustomer={setCustomer}
+                  onNext={handleStartQuote}
+                  onCancel={() => setAppState('dashboard')}
+              />
+          </>
+      );
+  }
+
   return (
     <div className="min-h-screen bg-gray-50 font-sans text-gray-800 flex flex-col">
       <StyleBlock />
