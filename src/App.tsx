@@ -23,7 +23,7 @@ import { LoginScreen } from './components/LoginScreen';
 import { CustomerForm } from './components/CustomerForm';
 import { Dashboard } from './components/Dashboard';
 import { ThemeManager, FormulaManager, DatabaseEditor, StaffManager } from './components/AdminSettings';
-import { safeLocalStorageSetItem } from './utils';
+import { safeLocalStorageSetItem, isCurtainTypeMatch, checkCondition, normalizeCurtainType } from './utils';
 
 // --- Firebase Config ---
 const firebaseConfig = {
@@ -158,7 +158,17 @@ export default function App() {
   const [db, setDb] = useState<any>(() => {
     try {
       const saved = localStorage.getItem('cached_db');
-      return saved ? JSON.parse(saved) : INITIAL_DB;
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          fabrics: Array.isArray(parsed.fabrics) ? parsed.fabrics : INITIAL_DB.fabrics,
+          blinds: Array.isArray(parsed.blinds) ? parsed.blinds : INITIAL_DB.blinds,
+          venetians: Array.isArray(parsed.venetians) ? parsed.venetians : INITIAL_DB.venetians,
+          rails: Array.isArray(parsed.rails) ? parsed.rails : INITIAL_DB.rails,
+          accs: Array.isArray(parsed.accs) ? parsed.accs : INITIAL_DB.accs,
+        };
+      }
+      return INITIAL_DB;
     } catch { return INITIAL_DB; }
   });
 
@@ -230,35 +240,26 @@ export default function App() {
       return items.filter(i => i.houseName === selectedHouse && i.roomName === selectedRoom);
   }, [items, selectedHouse, selectedRoom]);
 
-  const checkCondition = (condition: string, currentStyle: string) => {
-      if (!condition || condition === 'all') return true;
-      const conditions = condition.split(',').map(c => c.trim());
-      const styleDef = formulas.find(s => s.id === currentStyle);
-      const isFabric = styleDef?.category === 'fabric';
-      const isBlind = styleDef?.category === 'blind';
-      if (conditions.includes('fabric') && isFabric) return true;
-      if (conditions.includes('blind') && isBlind) return true;
-      if (conditions.includes(currentStyle)) return true;
-      return false;
-  };
-
   const fabricOptions = useMemo(() => {
-        let list = [];
-        if (['roller', 'venetian'].includes(currentItem.curtainStyle)) {
-             list = [...db.blinds, ...db.venetians];
+        let list: any[] = [];
+        const isBlindStyle = formulas.find(f => f.id === currentItem.curtainStyle)?.category === 'blind';
+        if (isBlindStyle) {
+             list = [...(db?.blinds || []), ...(db?.venetians || [])];
         } else {
-             list = db.fabrics.filter((f: any) => f.type === currentItem.curtainType);
+             list = (db?.fabrics || []).filter((f: any) => isCurtainTypeMatch(f.type, currentItem.curtainType));
         }
-        return list.filter((item: any) => checkCondition(item.condition, currentItem.curtainStyle))
-                    .sort((a: any, b: any) => a.name.localeCompare(b.name))
-                    .map((item: any) => ({ value: item.id, label: `${item.name} (${item.price})` }));
+        return list
+            .filter((item: any) => checkCondition(item.condition, currentItem.curtainStyle, formulas))
+            .sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''))
+            .map((item: any) => ({ value: item.id, label: `${item.name} (${item.price || 0} บาท)` }));
     }, [db, currentItem.curtainStyle, currentItem.curtainType, formulas]);
 
   const railOptions = useMemo(() => {
-        return db.rails
-            .filter((r: any) => checkCondition(r.condition, currentItem.curtainStyle))
-            .map((r: any) => ({ value: r.id, label: `${r.name} (${r.price})` }));
-    }, [db.rails, currentItem.curtainStyle, formulas]);
+        const opts = (db?.rails || [])
+            .filter((r: any) => checkCondition(r.condition, currentItem.curtainStyle, formulas))
+            .map((r: any) => ({ value: r.id, label: `${r.name} (${r.price || 0} บาท/${r.unit || 'เมตร'})` }));
+        return [{ value: '', label: '-- ไม่ใช้ราง / ไม่ระบุ --' }, ...opts];
+    }, [db?.rails, currentItem.curtainStyle, formulas]);
 
 
   const handleLogin = (staffData: Staff) => { 
@@ -376,8 +377,18 @@ export default function App() {
 
   const handleManualSaveDB = async () => {
     try {
-        await setDoc(doc(firestore, 'artifacts', appId, 'public', 'data', 'app_settings', 'db_data'), db);
-        alert('บันทึกและซิงค์ข้อมูลเรียบร้อยแล้ว ทุกเครื่องจะเห็นข้อมูลชุดนี้');
+        const safeData = {
+            fabrics: Array.isArray(db?.fabrics) ? db.fabrics : [],
+            blinds: Array.isArray(db?.blinds) ? db.blinds : [],
+            venetians: Array.isArray(db?.venetians) ? db.venetians : [],
+            rails: Array.isArray(db?.rails) ? db.rails : [],
+            accs: Array.isArray(db?.accs) ? db.accs : [],
+        };
+        safeLocalStorageSetItem('cached_db', JSON.stringify(safeData));
+        if (firestore) {
+            await setDoc(doc(firestore, 'artifacts', appId, 'public', 'data', 'app_settings', 'db_data'), safeData);
+        }
+        alert('บันทึกและซิงค์ฐานข้อมูลเรียบร้อยแล้ว ทุกเครื่องจะเห็นข้อมูลชุดนี้ทันที');
     } catch (e: any) {
         console.error(e);
         alert('เกิดข้อผิดพลาดในการบันทึก: ' + e.message);
@@ -1022,8 +1033,15 @@ export default function App() {
                 (docSnap) => { 
                     if(docSnap.exists()) {
                         const data = docSnap.data();
-                        setDb(data); 
-                        safeLocalStorageSetItem('cached_db', JSON.stringify(data));
+                        const safeData = {
+                            fabrics: Array.isArray(data.fabrics) ? data.fabrics : INITIAL_DB.fabrics,
+                            blinds: Array.isArray(data.blinds) ? data.blinds : INITIAL_DB.blinds,
+                            venetians: Array.isArray(data.venetians) ? data.venetians : INITIAL_DB.venetians,
+                            rails: Array.isArray(data.rails) ? data.rails : INITIAL_DB.rails,
+                            accs: Array.isArray(data.accs) ? data.accs : INITIAL_DB.accs,
+                        };
+                        setDb(safeData); 
+                        safeLocalStorageSetItem('cached_db', JSON.stringify(safeData));
                     }
                 },
                 (err) => console.error("db_data listener error", err)
@@ -1105,9 +1123,16 @@ export default function App() {
     const styleDef = formulas.find(s => s.id === curtainStyle);
     if (!styleDef) return null;
     let material = null, isBlind = styleDef.category === 'blind';
-    if (curtainStyle === 'roller') material = db.blinds.find((b: any) => b.id === fabricId); 
-    else if (curtainStyle === 'venetian') material = db.venetians.find((b: any) => b.id === fabricId); 
-    else material = db.fabrics.find((f: any) => f.id === fabricId);
+    if (curtainStyle === 'roller') material = (db?.blinds || []).find((b: any) => b.id === fabricId); 
+    else if (curtainStyle === 'venetian') material = (db?.venetians || []).find((b: any) => b.id === fabricId); 
+    else material = (db?.fabrics || []).find((f: any) => f.id === fabricId);
+
+    // Fallback: search across all material lists in case item was moved or reclassified
+    if (!material) {
+        material = (db?.fabrics || []).find((f: any) => f.id === fabricId) ||
+                   (db?.blinds || []).find((b: any) => b.id === fabricId) ||
+                   (db?.venetians || []).find((v: any) => v.id === fabricId);
+    }
 
     const fabWidth = material ? (parseFloat(material.width) || 150) : 150;
     const priceUnit = material ? (parseFloat(material.price) || 0) : 0;
@@ -1138,7 +1163,7 @@ export default function App() {
             let requiredWidth = 0;
             if (['pleated', 'wave', 'wave_tape'].includes(curtainStyle)) requiredWidth = ((curtainWidthPerPanel * styleDef.fullness) + styleDef.hemSide) * panels;
             else if (['eyelet', 'loop'].includes(curtainStyle)) requiredWidth = (curtainWidthPerPanel + styleDef.hemSide) * panels; 
-            else if (curtainStyle === 'roman') requiredWidth = (curtainWidthPerPanel + styleDef.hemSide) * panels;
+            else if (curtainStyle === 'roman') requiredWidth = (curtainWidthPerPanel + styleDef.hemSide) * panels; 
             
             if(fabWidth > 0) {
                 rawCuts = requiredWidth / fabWidth;
@@ -1170,16 +1195,16 @@ export default function App() {
         sewingCost = (curtainWidthPerPanel * panels * railHeight / 10000) * sewRate;
     }
 
-    const selectedRail = db.rails.find((r: any) => r.id === railAccessoryId);
+    const selectedRail = (db?.rails || []).find((r: any) => r.id === railAccessoryId);
     let costRail = 0, railQty = 0;
     if (selectedRail) {
         railQty = selectedRail.unit === 'เมตร' ? Math.max(1, Math.ceil(railWidth/100*10)/10) : 1;
-        costRail = railQty * selectedRail.price;
+        costRail = railQty * (parseFloat(selectedRail.price) || 0);
     }
     let costAcc = extraAccessories.reduce((sum, accObj) => {
-        const a = db.accs.find((x: any) => x.id === accObj.id);
+        const a = (db?.accs || []).find((x: any) => x.id === accObj.id);
         const qty = parseInt(accObj.qty as any) || 0;
-        return sum + (a ? (a.price * qty) : 0);
+        return sum + (a ? ((parseFloat(a.price) || 0) * qty) : 0);
     }, 0);
 
     const costFabric = usage * priceUnit;
@@ -1467,7 +1492,7 @@ export default function App() {
                   firestore={firestore}
                   appId={appId}
               />
-              {modal === 'database' && isAdmin && ( <Modal title="จัดการฐานข้อมูล (Admin)" onClose={()=>setModal(null)} maxWidth="max-w-4xl"><DatabaseEditor db={db} setDb={setDb} formulas={formulas} onSave={handleManualSaveDB} initialDb={INITIAL_DB}/></Modal> )}
+              {modal === 'database' && isAdmin && ( <Modal title="จัดการฐานข้อมูลสินค้าและราคา (Admin)" onClose={()=>setModal(null)} maxWidth="max-w-6xl"><DatabaseEditor db={db} setDb={setDb} formulas={formulas} onSave={handleManualSaveDB} initialDb={INITIAL_DB}/></Modal> )}
               {modal === 'staff_manager' && isAdmin && ( <Modal title="จัดการพนักงาน (Admin)" onClose={()=>setModal(null)}><StaffManager staffList={staffList} setStaffList={setStaffList} onSave={handleUpdateStaff} adminId={ADMIN_ID}/></Modal> )}
               {modal === 'formulas' && isAdmin && ( <Modal title="จัดการสูตรคำนวณ (Admin)" onClose={()=>setModal(null)}><FormulaManager formulas={formulas} setFormulas={setFormulas} onSave={handleUpdateFormulas}/></Modal> )}
               {modal === 'theme' && isAdmin && ( <Modal title="จัดการสี/ธีม (Admin)" onClose={()=>setModal(null)}><ThemeManager theme={theme} setTheme={setTheme} onSave={handleUpdateTheme}/></Modal> )}
@@ -2040,8 +2065,15 @@ export default function App() {
                                                     </select>
                                                 </div>
                                                 <div>
-                                                    <label className="label">เลือกผ้า/รุ่น</label>
-                                                    <SearchableSelect options={fabricOptions} value={currentItem.fabricId} onChange={(e: any) => setCurrentItem({...currentItem, fabricId: e.target.value})} />
+                                                    <label className="label">
+                                                        {formulas.find(f=>f.id===currentItem.curtainStyle)?.category === 'blind' ? 'เลือกรุ่น/มู่ลี่' : 'เลือกผ้า/รุ่น'}
+                                                    </label>
+                                                    <SearchableSelect 
+                                                        options={fabricOptions} 
+                                                        value={currentItem.fabricId} 
+                                                        onChange={(e: any) => setCurrentItem({...currentItem, fabricId: e.target.value})} 
+                                                        placeholder={formulas.find(f=>f.id===currentItem.curtainStyle)?.category === 'blind' ? 'ค้นหาหรือเลือกรุ่น/มู่ลี่...' : 'ค้นหาหรือเลือกลายผ้า...'}
+                                                    />
                                                 </div>
                                                 <div>
                                                     <label className="label">ระบุสี</label>
@@ -2103,7 +2135,7 @@ export default function App() {
                                             <div>
                                                 <label className="label">ส่วนประกอบเสริมอื่นๆ</label>
                                                 <div className="border border-gray-200 rounded bg-gray-50 h-32 overflow-y-auto p-2 text-xs">
-                                                    {db.accs.filter((a: any) => checkCondition(a.condition, currentItem.curtainStyle)).map((acc: any) => { 
+                                                    {(db?.accs || []).filter((a: any) => checkCondition(a.condition, currentItem.curtainStyle, formulas)).map((acc: any) => { 
                                                         const isSelected = currentItem.extraAccessories.some(x => x.id === acc.id); 
                                                         const currentQty = currentItem.extraAccessories.find(x => x.id === acc.id)?.qty || 1; 
                                                         return (
@@ -2118,7 +2150,7 @@ export default function App() {
                                                                             setCurrentItem({ ...currentItem, extraAccessories: newAccs }); 
                                                                         }}
                                                                     />
-                                                                    <span>{acc.name} ({acc.price} บาท)</span>
+                                                                    <span>{acc.name} ({acc.price} บาท/{acc.unit || 'ชิ้น'})</span>
                                                                 </label>
                                                                 {isSelected && <input type="number" min="1" className="w-12 p-1 text-center border rounded text-[11px] bg-white text-gray-800" value={currentQty ?? ''} onChange={(e) => { const newAccs = currentItem.extraAccessories.map(x => x.id === acc.id ? { ...x, qty: e.target.value } : x); setCurrentItem({ ...currentItem, extraAccessories: newAccs }); }}/>}
                                                             </div>
@@ -2251,7 +2283,7 @@ export default function App() {
           </div>
         </Modal>
       )}
-      {modal === 'database' && isAdmin && ( <Modal title="จัดการฐานข้อมูล (Admin)" onClose={()=>setModal(null)} maxWidth="max-w-4xl"><DatabaseEditor db={db} setDb={setDb} formulas={formulas} onSave={handleManualSaveDB} initialDb={INITIAL_DB}/></Modal> )}
+      {modal === 'database' && isAdmin && ( <Modal title="จัดการฐานข้อมูลสินค้าและราคา (Admin)" onClose={()=>setModal(null)} maxWidth="max-w-6xl"><DatabaseEditor db={db} setDb={setDb} formulas={formulas} onSave={handleManualSaveDB} initialDb={INITIAL_DB}/></Modal> )}
       {modal === 'staff_manager' && isAdmin && ( <Modal title="จัดการพนักงาน (Admin)" onClose={()=>setModal(null)}><StaffManager staffList={staffList} setStaffList={setStaffList} onSave={handleUpdateStaff} adminId={ADMIN_ID}/></Modal> )}
       {modal === 'formulas' && isAdmin && ( <Modal title="จัดการสูตรคำนวณ (Admin)" onClose={()=>setModal(null)}><FormulaManager formulas={formulas} setFormulas={setFormulas} onSave={handleUpdateFormulas}/></Modal> )}
       {modal === 'theme' && isAdmin && ( <Modal title="จัดการสี/ธีม (Admin)" onClose={()=>setModal(null)}><ThemeManager theme={theme} setTheme={setTheme} onSave={handleUpdateTheme}/></Modal> )}

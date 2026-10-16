@@ -114,15 +114,21 @@ export const SearchableSelect = ({ options, value, onChange, placeholder = "ค�
 export const ConditionSelector = ({ value, onChange, formulas }: { value: string; onChange: (v: string) => void; formulas: Formula[] }) => {
     const [isOpen, setIsOpen] = useState(false);
     const wrapperRef = useRef<HTMLDivElement>(null);
-    const conditions = value ? value.split(',').map(s=>s.trim()) : ['all'];
-    const options = [
+    const conditions = value ? value.split(',').map(s=>s.trim().toLowerCase()) : ['all'];
+    
+    const baseOptions = [
       { id: 'all', label: 'ทั้งหมด (All)' }, 
       { id: 'fabric', label: 'เฉพาะม่านผ้า' }, 
       { id: 'blind', label: 'เฉพาะม่านสำเร็จ' }, 
-      { id: 'roller', label: 'ม่านม้วน' }, 
-      { id: 'venetian', label: 'มู่ลี่' }, 
-      ...formulas.map(s => ({ id: s.id, label: s.label }))
+      ...(formulas || []).map(s => ({ id: s.id, label: s.label }))
     ];
+
+    const seenIds = new Set<string>();
+    const options = baseOptions.filter(opt => {
+        if (seenIds.has(opt.id)) return false;
+        seenIds.add(opt.id);
+        return true;
+    });
 
     useEffect(() => { 
         const handleClickOutside = (event: MouseEvent) => { 
@@ -150,22 +156,30 @@ export const ConditionSelector = ({ value, onChange, formulas }: { value: string
         onChange(newConds.join(',')); 
     };
 
+    const displayLabel = conditions.map(c => {
+        const found = options.find(o => o.id === c);
+        return found ? found.label : c;
+    }).join(', ');
+
     return (
         <div className="relative" ref={wrapperRef}>
-            <div className="w-full p-1 border rounded text-xs bg-white cursor-pointer min-h-[28px] flex items-center" onClick={() => setIsOpen(!isOpen)}>
-                <div className="truncate text-blue-600 w-full">{value || 'all'}</div>
+            <div className="w-full p-1.5 border rounded text-xs bg-white cursor-pointer min-h-[28px] flex items-center justify-between hover:border-blue-400 transition-colors" onClick={() => setIsOpen(!isOpen)}>
+                <div className="truncate text-blue-600 font-medium pr-1" title={displayLabel || 'ทั้งหมด (All)'}>{displayLabel || 'ทั้งหมด (All)'}</div>
                 <ChevronDown size={14} className="text-gray-400 flex-shrink-0"/>
             </div>
             {isOpen && (
-                <div className="absolute z-50 mt-1 w-64 bg-white border border-gray-200 rounded shadow-lg max-h-60 overflow-y-auto p-1">
-                    {options.map(opt => (
-                        <div key={opt.id} className={`flex items-center gap-2 p-2 hover:bg-blue-50 cursor-pointer text-xs rounded ${conditions.includes(opt.id) ? 'bg-blue-50 text-blue-700 font-bold' : 'text-gray-600'}`} onClick={() => toggleCondition(opt.id)}>
-                            <div className={`w-4 h-4 border rounded flex items-center justify-center ${conditions.includes(opt.id) ? 'bg-blue-600 border-blue-600' : 'border-gray-300'}`}>
-                                {conditions.includes(opt.id) && <CheckSquare size={12} className="text-white"/>}
+                <div className="absolute z-50 mt-1 w-64 bg-white border border-gray-200 rounded shadow-xl max-h-60 overflow-y-auto p-1 text-xs">
+                    {options.map(opt => {
+                        const isChecked = conditions.includes(opt.id);
+                        return (
+                            <div key={opt.id} className={`flex items-center gap-2 p-1.5 hover:bg-blue-50 cursor-pointer rounded ${isChecked ? 'bg-blue-50 text-blue-700 font-bold' : 'text-gray-600'}`} onClick={() => toggleCondition(opt.id)}>
+                                <div className={`w-4 h-4 border rounded flex items-center justify-center ${isChecked ? 'bg-blue-600 border-blue-600' : 'border-gray-300'}`}>
+                                    {isChecked && <CheckSquare size={12} className="text-white"/>}
+                                </div>
+                                <span>{opt.label}</span>
                             </div>
-                            <span>{opt.label}</span>
-                        </div>
-                    ))}
+                        );
+                    })}
                 </div>
             )}
         </div>

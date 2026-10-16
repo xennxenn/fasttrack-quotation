@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Trash2, Save, Upload, RefreshCw, ArrowUp, ArrowDown, Info, CheckSquare, Users, Ruler, Palette, Database } from 'lucide-react';
+import { Trash2, Save, Upload, RefreshCw, ArrowUp, ArrowDown, Info, CheckSquare, Users, Ruler, Palette, Database, Plus, Search } from 'lucide-react';
 import { ConditionSelector } from './Common';
 import { Formula, Staff } from '../types';
+import { safeLocalStorageSetItem, normalizeCurtainType } from '../utils';
 
 export const ThemeManager = ({ theme, setTheme, onSave }: any) => { 
     const [localTheme, setLocalTheme] = useState(theme);
@@ -83,10 +84,25 @@ export const FormulaManager = ({ formulas, setFormulas, onSave }: any) => {
 };
 
 export const DatabaseEditor = ({ db, setDb, formulas, onSave, initialDb }: any) => { 
-    const [tab, setTab] = useState('fabrics'); 
+    const [tab, setTab] = useState<'fabrics' | 'blinds' | 'venetians' | 'rails' | 'accs'>('fabrics'); 
     const [importText, setImportText] = useState(''); 
+    const [searchTerm, setSearchTerm] = useState('');
+    const [showImport, setShowImport] = useState(false);
+
+    // Form state for creating a new item manually
+    const [newItem, setNewItem] = useState({
+        name: '',
+        design: '',
+        price: '',
+        width: '150',
+        yRepeat: '0',
+        type: 'ทึบ',
+        unit: 'เมตร',
+        condition: 'all'
+    });
+
     const patterns: any = {
-        fabrics: "ชื่อ, ดีไซน์, ราคา, หน้ากว้าง(ซม.), Repeat, ประเภท(ทึบ/โปร่ง), เงื่อนไข",
+        fabrics: "ชื่อ, ดีไซน์, ราคา, หน้ากว้าง(ซม.), Repeat, ประเภท(ทึบ/โปร่ง), เงื่อนไข (หรือย่อ: ชื่อ, ราคา, ประเภท)",
         blinds: "ชื่อ, ราคา, เงื่อนไข",
         venetians: "ชื่อ, ราคา, เงื่อนไข",
         rails: "ชื่อ, ราคา, หน่วย, เงื่อนไข",
@@ -105,7 +121,85 @@ export const DatabaseEditor = ({ db, setDb, formulas, onSave, initialDb }: any) 
     const handleReset = () => {
         if (confirm(`คุณแน่ใจหรือไม่ที่จะรีเซ็ตข้อมูล "${tab.toUpperCase()}" กลับเป็นค่าเริ่มต้น?\nข้อมูลที่คุณเพิ่มเองในหมวดนี้จะหายไปทั้งหมด!`)) {
             const defaultData = JSON.parse(JSON.stringify(initialDb[tab] || []));
-            setDb((prev: any) => ({ ...prev, [tab]: defaultData }));
+            const updatedDb = { ...db, [tab]: defaultData };
+            setDb(updatedDb);
+            safeLocalStorageSetItem('cached_db', JSON.stringify(updatedDb));
+        }
+    };
+
+    const handleAddItem = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!newItem.name.trim()) {
+            return alert('กรุณาระบุชื่อสินค้า/รายการ');
+        }
+
+        const id = `${tab.slice(0, 1)}_${Date.now()}`;
+        const priceNum = parseFloat(newItem.price) || 0;
+        let createdItem: any = null;
+
+        if (tab === 'fabrics') {
+            createdItem = {
+                id,
+                name: newItem.name.trim(),
+                design: newItem.design.trim() || 'พื้น',
+                price: priceNum,
+                width: parseFloat(newItem.width) || 150,
+                yRepeat: parseFloat(newItem.yRepeat) || 0,
+                weight: 0,
+                type: normalizeCurtainType(newItem.type),
+                condition: (newItem.condition || 'all').trim()
+            };
+        } else if (tab === 'rails') {
+            createdItem = {
+                id,
+                name: newItem.name.trim(),
+                price: priceNum,
+                unit: newItem.unit.trim() || 'เมตร',
+                condition: (newItem.condition || 'all').trim()
+            };
+        } else if (tab === 'accs') {
+            createdItem = {
+                id,
+                name: newItem.name.trim(),
+                price: priceNum,
+                unit: newItem.unit.trim() || 'ชิ้น',
+                condition: (newItem.condition || 'all').trim()
+            };
+        } else if (tab === 'blinds') {
+            createdItem = {
+                id,
+                name: newItem.name.trim(),
+                price: priceNum,
+                condition: (newItem.condition || 'roller').trim()
+            };
+        } else if (tab === 'venetians') {
+            createdItem = {
+                id,
+                name: newItem.name.trim(),
+                price: priceNum,
+                condition: (newItem.condition || 'venetian').trim()
+            };
+        }
+
+        if (createdItem) {
+            const currentList = Array.isArray(db[tab]) ? db[tab] : [];
+            const updatedDb = { ...db, [tab]: [createdItem, ...currentList] };
+            setDb(updatedDb);
+            safeLocalStorageSetItem('cached_db', JSON.stringify(updatedDb));
+
+            // Reset form
+            setNewItem({
+                name: '',
+                design: '',
+                price: '',
+                width: '150',
+                yRepeat: '0',
+                type: 'ทึบ',
+                unit: tab === 'rails' ? 'เมตร' : 'ชิ้น',
+                condition: tab === 'blinds' ? 'roller' : tab === 'venetians' ? 'venetian' : 'all'
+            });
+
+            alert(`เพิ่ม "${createdItem.name}" เข้าหมวด ${tab.toUpperCase()} เรียบร้อยแล้ว`);
         }
     };
 
@@ -116,102 +210,475 @@ export const DatabaseEditor = ({ db, setDb, formulas, onSave, initialDb }: any) 
         
         lines.forEach((line, idx) => {
             if (!line.trim()) return;
-            const cols = line.split(',');
+            const cols = line.split(',').map(c => c.trim());
             if (cols.length < 2) return;
             
-            const id = Date.now() + idx + Math.random().toString().slice(2,5);
+            const id = `${tab.slice(0, 1)}_${Date.now()}_${idx}_${Math.random().toString().slice(2,5)}`;
             let item = null;
 
             if (tab === 'fabrics') {
-                item = { id, name: cols[0], design: cols[1]||'', price: parseFloat(cols[2])||0, width: parseFloat(cols[3])||150, yRepeat: parseFloat(cols[4])||0, weight: 0, type: cols[5]||'ทึบ', condition: cols[6]||'all' }; 
+                // Flexible column recognition
+                // Format A (full 7 cols): name, design, price, width, yRepeat, type, condition
+                // Format B (3 cols): name, price, type
+                // Format C (2 cols): name, price
+                if (cols.length >= 6) {
+                    item = { 
+                        id, 
+                        name: cols[0], 
+                        design: cols[1] || 'พื้น', 
+                        price: parseFloat(cols[2]) || 0, 
+                        width: parseFloat(cols[3]) || 150, 
+                        yRepeat: parseFloat(cols[4]) || 0, 
+                        weight: 0, 
+                        type: normalizeCurtainType(cols[5] || 'ทึบ'), 
+                        condition: cols[6] || 'all' 
+                    }; 
+                } else if (cols.length === 3) {
+                    const isCol1Price = !isNaN(parseFloat(cols[1]));
+                    item = {
+                        id,
+                        name: cols[0],
+                        design: isCol1Price ? 'พื้น' : cols[1],
+                        price: isCol1Price ? (parseFloat(cols[1]) || 0) : (parseFloat(cols[2]) || 0),
+                        width: 150,
+                        yRepeat: 0,
+                        weight: 0,
+                        type: isCol1Price ? normalizeCurtainType(cols[2] || 'ทึบ') : 'ทึบ',
+                        condition: 'all'
+                    };
+                } else {
+                    item = {
+                        id,
+                        name: cols[0],
+                        design: 'พื้น',
+                        price: parseFloat(cols[1]) || 0,
+                        width: 150,
+                        yRepeat: 0,
+                        weight: 0,
+                        type: 'ทึบ',
+                        condition: 'all'
+                    };
+                }
             } else if (tab === 'rails') {
-                item = { id, name: cols[0], price: parseFloat(cols[1])||0, unit: cols[2]||'เมตร', condition: cols[3]||'all' }; 
+                item = { 
+                    id, 
+                    name: cols[0], 
+                    price: parseFloat(cols[1]) || 0, 
+                    unit: cols[2] || 'เมตร', 
+                    condition: cols[3] || 'all' 
+                }; 
             } else if (tab === 'accs') {
-                item = { id, name: cols[0], price: parseFloat(cols[1])||0, unit: cols[2]||'ชิ้น', condition: cols[3]||'all' }; 
+                item = { 
+                    id, 
+                    name: cols[0], 
+                    price: parseFloat(cols[1]) || 0, 
+                    unit: cols[2] || 'ชิ้น', 
+                    condition: cols[3] || 'all' 
+                }; 
             } else if (tab === 'blinds' || tab === 'venetians') {
-                item = { id, name: cols[0], price: parseFloat(cols[1])||0, condition: cols[2]||'all' }; 
+                item = { 
+                    id, 
+                    name: cols[0], 
+                    price: parseFloat(cols[1]) || 0, 
+                    condition: cols[2] || (tab === 'blinds' ? 'roller' : 'venetian') 
+                }; 
             }
             
             if (item) newItems.push(item);
         });
 
         if (newItems.length > 0) {
-            setDb((prev: any) => ({ ...prev, [tab]: [...prev[tab], ...newItems] })); 
+            const currentList = Array.isArray(db[tab]) ? db[tab] : [];
+            const updatedDb = { ...db, [tab]: [...newItems, ...currentList] };
+            setDb(updatedDb); 
+            safeLocalStorageSetItem('cached_db', JSON.stringify(updatedDb));
             setImportText(''); 
-            alert(`นำเข้าเรียบร้อย ${newItems.length} รายการ`); 
+            alert(`นำเข้าเรียบร้อย ${newItems.length} รายการ (บันทึกเข้าระบบแล้ว)`); 
         } else {
-            alert("ไม่พบข้อมูลที่ถูกต้อง");
+            alert("ไม่พบข้อมูลที่ถูกต้อง กรุณาตรวจสอบรูปแบบข้อความ");
         }
     }; 
     
     const updateRow = (idx: number, field: string, val: any) => { 
-        const newData = [...(db[tab] || [])]; 
-        newData[idx] = { ...newData[idx], [field]: val }; 
-        setDb({ ...db, [tab]: newData }); 
+        const currentList = Array.isArray(db[tab]) ? [...db[tab]] : [];
+        currentList[idx] = { ...currentList[idx], [field]: val }; 
+        const updatedDb = { ...db, [tab]: currentList };
+        setDb(updatedDb); 
+        safeLocalStorageSetItem('cached_db', JSON.stringify(updatedDb));
     }; 
 
     const removeRow = (idx: number) => { 
-        const newData = [...(db[tab] || [])]; 
-        newData.splice(idx, 1); 
-        setDb({ ...db, [tab]: newData }); 
+        const currentList = Array.isArray(db[tab]) ? [...db[tab]] : [];
+        const itemToRemove = currentList[idx];
+        if (confirm(`คุณต้องการลบ "${itemToRemove?.name || 'รายการนี้'}" ใช่หรือไม่?`)) {
+            currentList.splice(idx, 1); 
+            const updatedDb = { ...db, [tab]: currentList };
+            setDb(updatedDb); 
+            safeLocalStorageSetItem('cached_db', JSON.stringify(updatedDb));
+        }
     }; 
 
     const moveRow = (idx: number, direction: number) => {
-        const newData = [...(db[tab] || [])];
+        const currentList = Array.isArray(db[tab]) ? [...db[tab]] : [];
         if (direction === -1 && idx > 0) {
-            [newData[idx], newData[idx - 1]] = [newData[idx - 1], newData[idx]];
-        } else if (direction === 1 && idx < newData.length - 1) {
-            [newData[idx], newData[idx + 1]] = [newData[idx + 1], newData[idx]];
+            [currentList[idx], currentList[idx - 1]] = [currentList[idx - 1], currentList[idx]];
+        } else if (direction === 1 && idx < currentList.length - 1) {
+            [currentList[idx], currentList[idx + 1]] = [currentList[idx + 1], currentList[idx]];
         }
-        setDb({ ...db, [tab]: newData });
+        const updatedDb = { ...db, [tab]: currentList };
+        setDb(updatedDb); 
+        safeLocalStorageSetItem('cached_db', JSON.stringify(updatedDb));
     };
+
+    const tabCounts = {
+        fabrics: db?.fabrics?.length || 0,
+        blinds: db?.blinds?.length || 0,
+        venetians: db?.venetians?.length || 0,
+        rails: db?.rails?.length || 0,
+        accs: db?.accs?.length || 0
+    };
+
+    const currentTabItems = (db[tab] || []) as any[];
+    const filteredRows = currentTabItems.filter((row: any) => {
+        if (!searchTerm.trim()) return true;
+        const q = searchTerm.toLowerCase();
+        return (row.name || '').toLowerCase().includes(q) || 
+               (row.design || '').toLowerCase().includes(q) ||
+               (row.type || '').toLowerCase().includes(q);
+    });
     
     return (
-    <div className="flex flex-col h-full relative font-sans">
-        <div className="flex gap-2 mb-4 border-b overflow-x-auto flex-none">
-            {['fabrics','blinds','venetians','rails','accs'].map(t => (
-                <button key={t} onClick={()=>setTab(t)} className={`px-4 py-2 whitespace-nowrap text-sm ${tab===t ? 'border-b-2 border-blue-600 font-bold text-blue-600' : 'text-gray-500'}`}>
-                    {t==='fabrics'?'ผ้า': t==='rails'?'ราง': t==='accs'?'อุปกรณ์': t==='blinds'?'ม่านสำเร็จ': t==='venetians'?'มู่ลี่': t.toUpperCase()}
+    <div className="flex flex-col h-full relative font-sans space-y-3">
+        {/* Navigation Tabs with Item Count Badges */}
+        <div className="flex gap-2 border-b overflow-x-auto flex-none pb-1">
+            {[
+                { id: 'fabrics', label: 'ผ้า', count: tabCounts.fabrics },
+                { id: 'blinds', label: 'ม่านสำเร็จ', count: tabCounts.blinds },
+                { id: 'venetians', label: 'มู่ลี่', count: tabCounts.venetians },
+                { id: 'rails', label: 'ราง', count: tabCounts.rails },
+                { id: 'accs', label: 'อุปกรณ์', count: tabCounts.accs }
+            ].map(t => (
+                <button 
+                    key={t.id} 
+                    onClick={() => {
+                        setTab(t.id as any);
+                        setSearchTerm('');
+                        setNewItem(prev => ({
+                            ...prev,
+                            unit: t.id === 'rails' ? 'เมตร' : 'ชิ้น',
+                            condition: t.id === 'blinds' ? 'roller' : t.id === 'venetians' ? 'venetian' : 'all'
+                        }));
+                    }} 
+                    className={`px-3 py-2 whitespace-nowrap text-xs md:text-sm flex items-center gap-1.5 rounded-t-lg transition-colors cursor-pointer ${tab === t.id ? 'border-b-2 border-blue-600 font-bold text-blue-600 bg-blue-50/50' : 'text-gray-500 hover:text-gray-800'}`}
+                >
+                    <span>{t.label}</span>
+                    <span className={`px-1.5 py-0.2 rounded-full text-[11px] ${tab === t.id ? 'bg-blue-600 text-white font-bold' : 'bg-gray-200 text-gray-600'}`}>
+                        {t.count}
+                    </span>
                 </button>
             ))}
         </div>
-        <div className="flex-1 overflow-auto min-h-0 text-sm">
+
+        {/* Quick Add Form Section */}
+        <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 shadow-xs">
+            <div className="flex items-center justify-between mb-2">
+                <span className="font-bold text-xs text-slate-800 flex items-center gap-1.5">
+                    <Plus size={15} className="text-green-600"/> เพิ่มรายการใหม่ในหมวด "{tab === 'fabrics' ? 'ผ้า' : tab === 'rails' ? 'ราง' : tab === 'accs' ? 'อุปกรณ์' : tab === 'blinds' ? 'ม่านสำเร็จ' : 'มู่ลี่'}"
+                </span>
+                <span className="text-[11px] text-gray-400">กรอกข้อมูลแล้วกด "เพิ่มรายการ"</span>
+            </div>
+            
+            <form onSubmit={handleAddItem} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-2 text-xs">
+                <div className="md:col-span-2">
+                    <label className="block text-[11px] font-bold text-gray-700 mb-0.5">ชื่อรายการ / รหัส *</label>
+                    <input 
+                        className="w-full p-1.5 border rounded bg-white font-medium" 
+                        placeholder={tab === 'fabrics' ? 'เช่น Dimout B01' : tab === 'rails' ? 'เช่น ราง M (มาตรฐาน)' : 'เช่น ชื่อสินค้า'}
+                        value={newItem.name} 
+                        onChange={e => setNewItem({ ...newItem, name: e.target.value })}
+                        required
+                    />
+                </div>
+
+                <div>
+                    <label className="block text-[11px] font-bold text-gray-700 mb-0.5">
+                        ราคา {tab === 'fabrics' ? '(บ./หลา)' : tab === 'rails' ? '(บ./หน่วย)' : tab === 'accs' ? '(บ./ชิ้น)' : '(บ./ตร.ม.)'} *
+                    </label>
+                    <input 
+                        type="number"
+                        step="any"
+                        className="w-full p-1.5 border rounded bg-white text-right font-bold text-blue-700" 
+                        placeholder="0"
+                        value={newItem.price} 
+                        onChange={e => setNewItem({ ...newItem, price: e.target.value })}
+                        required
+                    />
+                </div>
+
+                {tab === 'fabrics' && (
+                    <>
+                        <div>
+                            <label className="block text-[11px] font-bold text-gray-700 mb-0.5">ประเภทผ้า</label>
+                            <select 
+                                className="w-full p-1.5 border rounded bg-white"
+                                value={newItem.type}
+                                onChange={e => setNewItem({ ...newItem, type: e.target.value })}
+                            >
+                                <option value="ทึบ">ทึบ (Dimout/Blackout)</option>
+                                <option value="โปร่ง">โปร่ง (Sheer)</option>
+                                <option value="all">ทั้งสอง (ทึบ/โปร่ง)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-[11px] font-bold text-gray-700 mb-0.5">หน้ากว้าง (ซม.)</label>
+                            <input 
+                                type="number"
+                                className="w-full p-1.5 border rounded bg-white text-center" 
+                                value={newItem.width} 
+                                onChange={e => setNewItem({ ...newItem, width: e.target.value })}
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-[11px] font-bold text-gray-700 mb-0.5">Repeat (ซม.)</label>
+                            <input 
+                                type="number"
+                                className="w-full p-1.5 border rounded bg-white text-center" 
+                                value={newItem.yRepeat} 
+                                onChange={e => setNewItem({ ...newItem, yRepeat: e.target.value })}
+                            />
+                        </div>
+                    </>
+                )}
+
+                {(tab === 'rails' || tab === 'accs') && (
+                    <div>
+                        <label className="block text-[11px] font-bold text-gray-700 mb-0.5">หน่วยนับ</label>
+                        <input 
+                            className="w-full p-1.5 border rounded bg-white text-center" 
+                            placeholder={tab === 'rails' ? 'เมตร' : 'ชิ้น'}
+                            value={newItem.unit} 
+                            onChange={e => setNewItem({ ...newItem, unit: e.target.value })}
+                        />
+                    </div>
+                )}
+
+                <div className={tab === 'fabrics' ? 'md:col-span-4' : 'md:col-span-2'}>
+                    <label className="block text-[11px] font-bold text-gray-700 mb-0.5">เงื่อนไขการแสดงผล (สไตล์ม่าน)</label>
+                    <ConditionSelector 
+                        value={newItem.condition} 
+                        onChange={val => setNewItem({ ...newItem, condition: val })} 
+                        formulas={formulas} 
+                    />
+                </div>
+
+                <div className="flex items-end md:col-span-2">
+                    <button 
+                        type="submit" 
+                        className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-1.5 px-3 rounded shadow-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                        <Plus size={15}/> เพิ่มรายการทันที
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        {/* Search and Table Tools */}
+        <div className="flex flex-col sm:flex-row justify-between items-center gap-2 pt-1">
+            <div className="relative w-full sm:w-72">
+                <Search size={14} className="absolute left-2.5 top-2.5 text-gray-400" />
+                <input 
+                    type="text"
+                    className="w-full pl-8 pr-3 py-1.5 text-xs border rounded-lg bg-white"
+                    placeholder={`ค้นหาใน ${filteredRows.length} รายการ...`}
+                    value={searchTerm}
+                    onChange={e => setSearchTerm(e.target.value)}
+                />
+            </div>
+
+            <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                <button 
+                    onClick={() => setShowImport(!showImport)}
+                    className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-lg flex items-center gap-1 font-medium transition-colors"
+                >
+                    <Upload size={13}/> {showImport ? 'ซ่อนนำเข้า CSV' : 'นำเข้า CSV'}
+                </button>
+                <button 
+                    onClick={handleReset} 
+                    className="text-xs bg-red-50 hover:bg-red-100 text-red-600 px-3 py-1.5 rounded-lg flex items-center gap-1 font-medium transition-colors"
+                >
+                    <RefreshCw size={12}/> รีเซ็ตเป็นค่าเริ่มต้น
+                </button>
+            </div>
+        </div>
+
+        {/* Collapsible CSV Import Form */}
+        {showImport && (
+            <div className="bg-blue-50/60 border border-blue-200 rounded-lg p-3 text-xs">
+                <div className="flex justify-between items-center mb-1">
+                    <span className="font-bold text-blue-900 flex items-center gap-1"><Upload size={14}/> นำเข้าข้อมูล {tab.toUpperCase()} (CSV)</span>
+                    <label className="text-[11px] bg-white border border-blue-300 hover:bg-blue-100 px-2 py-0.5 rounded cursor-pointer text-blue-700">
+                        เลือกไฟล์ .csv... <input type="file" accept=".csv,.txt" className="hidden" onChange={handleFileUpload}/>
+                    </label>
+                </div>
+                <div className="text-[11px] text-blue-700 mb-1.5 font-mono bg-white p-1 rounded border border-blue-100 overflow-x-auto whitespace-nowrap">
+                    รูปแบบ: {patterns[tab]}
+                </div>
+                <textarea 
+                    className="w-full h-16 p-2 text-xs border rounded bg-white font-mono" 
+                    placeholder="วางข้อมูล CSV ที่นี่..."
+                    value={importText} 
+                    onChange={e => setImportText(e.target.value)}
+                />
+                <button onClick={handleImport} className="mt-1.5 bg-blue-600 text-white px-4 py-1.5 rounded text-xs font-bold hover:bg-blue-700 transition-colors">
+                    นำเข้าข้อมูลลงฐานข้อมูล
+                </button>
+            </div>
+        )}
+
+        {/* Items Table */}
+        <div className="flex-1 overflow-auto min-h-0 text-sm border rounded-lg bg-white shadow-xs">
             <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm border-collapse min-w-[800px]">
-                    <thead><tr className="bg-gray-100 sticky top-0 z-10"><th className="p-2 border">ชื่อ</th><th className="p-2 border">ราคา</th>{tab === 'fabrics' && <><th className="p-2 border">ประเภท</th><th className="p-2 border w-16">กว้าง(ซม.)</th><th className="p-2 border w-16">Repeat</th></>}<th className="p-2 border w-1/3">เงื่อนไข</th><th className="p-2 border w-24"></th></tr></thead>
-                    <tbody>
-                        {(db[tab] || []).map((row: any, idx: number) => (
-                        <tr key={row.id} className="hover:bg-gray-50">
-                            <td className="p-1 border"><input className="w-full p-1 border rounded" value={row.name} onChange={e=>updateRow(idx,'name',e.target.value)}/></td>
-                            <td className="p-1 border w-24"><input type="number" className="w-full p-1 border rounded" value={row.price} onChange={e=>updateRow(idx,'price',parseFloat(e.target.value))}/></td>
-                            {tab === 'fabrics' && <><td className="p-1 border w-20"><input className="w-full p-1 border rounded" value={row.type} onChange={e=>updateRow(idx,'type',e.target.value)}/></td><td className="p-1 border w-16"><input type="number" className="w-full p-1 border rounded" value={row.width} onChange={e=>updateRow(idx,'width',parseFloat(e.target.value))}/></td><td className="p-1 border w-16"><input type="number" className="w-full p-1 border rounded" value={row.yRepeat} onChange={e=>updateRow(idx,'yRepeat',parseFloat(e.target.value))}/></td></>}
-                            <td className="p-1 border"><ConditionSelector value={row.condition} onChange={val=>updateRow(idx,'condition',val)} formulas={formulas} /></td>
-                            <td className="p-1 border text-center flex items-center justify-center gap-1">
-                                <button onClick={()=>moveRow(idx, -1)} className="text-gray-400 hover:text-blue-500 disabled:opacity-30" disabled={idx===0}><ArrowUp size={14}/></button>
-                                <button onClick={()=>moveRow(idx, 1)} className="text-gray-400 hover:text-blue-500 disabled:opacity-30" disabled={idx===(db[tab]?.length || 0)-1}><ArrowDown size={14}/></button>
-                                <button onClick={()=>removeRow(idx)} className="text-red-500 ml-1"><Trash2 size={16}/></button>
-                            </td>
+                <table className="w-full text-left text-xs border-collapse min-w-[850px]">
+                    <thead>
+                        <tr className="bg-gray-100 sticky top-0 z-10 text-gray-700 font-bold border-b">
+                            <th className="p-2 border-r">ชื่อรายการ</th>
+                            <th className="p-2 border-r w-24 text-right">ราคา</th>
+                            {tab === 'fabrics' && (
+                                <>
+                                    <th className="p-2 border-r w-28">ประเภทผ้า</th>
+                                    <th className="p-2 border-r w-20 text-center">กว้าง (ซม.)</th>
+                                    <th className="p-2 border-r w-20 text-center">Repeat</th>
+                                </>
+                            )}
+                            {(tab === 'rails' || tab === 'accs') && (
+                                <th className="p-2 border-r w-20 text-center">หน่วย</th>
+                            )}
+                            <th className="p-2 border-r">เงื่อนไขการใช้ (สไตล์ม่าน)</th>
+                            <th className="p-2 text-center w-24">จัดการ</th>
                         </tr>
-                        ))}
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                        {filteredRows.length === 0 ? (
+                            <tr>
+                                <td colSpan={tab === 'fabrics' ? 7 : (tab === 'rails' || tab === 'accs') ? 5 : 4} className="p-8 text-center text-gray-400">
+                                    {searchTerm ? 'ไม่พบรายการที่ตรงกับการค้นหา' : 'ยังไม่มีรายการในหมวดนี้ กรอกข้อมูลด้านบนเพื่อเพิ่มรายการ'}
+                                </td>
+                            </tr>
+                        ) : (
+                            filteredRows.map((row: any) => {
+                                const realIdx = currentTabItems.findIndex((r: any) => r.id === row.id);
+                                return (
+                                <tr key={row.id} className="hover:bg-blue-50/30 transition-colors">
+                                    <td className="p-1 border-r">
+                                        <input 
+                                            className="w-full p-1.5 border rounded bg-transparent hover:bg-white focus:bg-white" 
+                                            value={row.name || ''} 
+                                            onChange={e => updateRow(realIdx, 'name', e.target.value)}
+                                        />
+                                    </td>
+                                    <td className="p-1 border-r w-24">
+                                        <input 
+                                            type="number" 
+                                            step="any"
+                                            className="w-full p-1.5 border rounded bg-transparent hover:bg-white focus:bg-white text-right font-medium" 
+                                            value={row.price ?? ''} 
+                                            onChange={e => updateRow(realIdx, 'price', parseFloat(e.target.value) || 0)}
+                                        />
+                                    </td>
+                                    {tab === 'fabrics' && (
+                                        <>
+                                            <td className="p-1 border-r w-28">
+                                                <select 
+                                                    className="w-full p-1.5 border rounded bg-white text-xs" 
+                                                    value={normalizeCurtainType(row.type)} 
+                                                    onChange={e => updateRow(realIdx, 'type', e.target.value)}
+                                                >
+                                                    <option value="ทึบ">ทึบ</option>
+                                                    <option value="โปร่ง">โปร่ง</option>
+                                                    <option value="all">ทั้งสอง (All)</option>
+                                                </select>
+                                            </td>
+                                            <td className="p-1 border-r w-20">
+                                                <input 
+                                                    type="number" 
+                                                    className="w-full p-1.5 border rounded bg-transparent hover:bg-white focus:bg-white text-center" 
+                                                    value={row.width ?? ''} 
+                                                    onChange={e => updateRow(realIdx, 'width', parseFloat(e.target.value) || 0)}
+                                                />
+                                            </td>
+                                            <td className="p-1 border-r w-20">
+                                                <input 
+                                                    type="number" 
+                                                    className="w-full p-1.5 border rounded bg-transparent hover:bg-white focus:bg-white text-center" 
+                                                    value={row.yRepeat ?? ''} 
+                                                    onChange={e => updateRow(realIdx, 'yRepeat', parseFloat(e.target.value) || 0)}
+                                                />
+                                            </td>
+                                        </>
+                                    )}
+                                    {(tab === 'rails' || tab === 'accs') && (
+                                        <td className="p-1 border-r w-20">
+                                            <input 
+                                                className="w-full p-1.5 border rounded bg-transparent hover:bg-white focus:bg-white text-center" 
+                                                value={row.unit || ''} 
+                                                onChange={e => updateRow(realIdx, 'unit', e.target.value)}
+                                            />
+                                        </td>
+                                    )}
+                                    <td className="p-1 border-r">
+                                        <ConditionSelector 
+                                            value={row.condition || 'all'} 
+                                            onChange={val => updateRow(realIdx, 'condition', val)} 
+                                            formulas={formulas} 
+                                        />
+                                    </td>
+                                    <td className="p-1 text-center">
+                                        <div className="flex items-center justify-center gap-1">
+                                            <button 
+                                                onClick={() => moveRow(realIdx, -1)} 
+                                                className="p-1 text-gray-400 hover:text-blue-600 disabled:opacity-20 cursor-pointer" 
+                                                disabled={realIdx === 0}
+                                                title="เลื่อนขึ้น"
+                                            >
+                                                <ArrowUp size={13}/>
+                                            </button>
+                                            <button 
+                                                onClick={() => moveRow(realIdx, 1)} 
+                                                className="p-1 text-gray-400 hover:text-blue-600 disabled:opacity-20 cursor-pointer" 
+                                                disabled={realIdx === currentTabItems.length - 1}
+                                                title="เลื่อนลง"
+                                            >
+                                                <ArrowDown size={13}/>
+                                            </button>
+                                            <button 
+                                                onClick={() => removeRow(realIdx)} 
+                                                className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded cursor-pointer ml-1"
+                                                title="ลบรายการ"
+                                            >
+                                                <Trash2 size={14}/>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                                );
+                            })
+                        )}
                     </tbody>
                 </table>
             </div>
         </div>
-        <div className="p-4 border-t bg-white flex flex-col gap-2 flex-none z-10 shadow-[0_-5px_15px_rgba(0,0,0,0.1)]">
-            <button onClick={onSave} className="w-full bg-green-600 text-white py-2 rounded-lg font-bold shadow-md hover:bg-green-700 flex items-center justify-center gap-2 transition-colors"><Save size={18}/> บันทึกและซิงค์ข้อมูล (Sync)</button>
-            
-            <div>
-                <h4 className="font-bold text-sm mb-1 flex justify-between">
-                    <span className="flex items-center gap-2"><Upload size={16}/> นำเข้า (CSV)</span>
-                    <div className="flex gap-2">
-                        <button onClick={handleReset} className="text-xs bg-red-100 text-red-600 px-2 py-1 rounded hover:bg-red-200 flex items-center gap-1"><RefreshCw size={12}/> รีเซ็ต</button>
-                        <label className="text-xs bg-gray-200 hover:bg-gray-300 px-2 py-1 rounded cursor-pointer">เลือกไฟล์... <input type="file" accept=".csv,.txt" className="hidden" onChange={handleFileUpload}/></label>
-                    </div>
-                </h4>
-                <div className="text-xs text-gray-500 mb-2 font-mono bg-gray-50 p-1 rounded border overflow-x-auto whitespace-nowrap">รูปแบบ: {patterns[tab]}</div>
-                <textarea className="w-full h-20 p-2 text-xs border rounded" value={importText} onChange={e=>setImportText(e.target.value)}/>
-                <button onClick={handleImport} className="mt-2 w-full bg-blue-600 text-white px-4 py-1 rounded text-sm hover:bg-blue-700">นำเข้าข้อมูล</button>
-            </div>
+
+        {/* Sticky Save and Cloud Sync Footer */}
+        <div className="pt-2 flex-none z-10">
+            <button 
+                onClick={onSave} 
+                className="w-full bg-green-600 text-white py-2.5 rounded-lg font-bold shadow hover:bg-green-700 flex items-center justify-center gap-2 transition-colors cursor-pointer text-sm"
+            >
+                <Save size={18}/> บันทึกและซิงค์ฐานข้อมูลทั้งหมด (Cloud Sync)
+            </button>
+            <p className="text-[11px] text-gray-500 text-center mt-1">
+                การแก้ไขในหน้านี้จะบันทึกในเครื่องทันที และเมื่อกดปุ่มเขียวจะซิงค์ขึ้น Cloud เพื่อให้พนักงานและเครื่องอื่นเห็นข้อมูลตรงกัน
+            </p>
         </div>
     </div>
     );
