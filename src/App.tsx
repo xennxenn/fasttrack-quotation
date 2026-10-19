@@ -226,7 +226,7 @@ export default function App() {
 
   const isAdmin = staff?.id === ADMIN_ID;
 
-  const availableHouses = useMemo(() => [...new Set([...DEFAULT_HOUSES, ...items.map(i=>i.houseName), ...tempHouses])], [items, tempHouses]);
+  const availableHouses = useMemo(() => [...new Set([...tempHouses, ...items.map(i=>i.houseName), ...DEFAULT_HOUSES])], [items, tempHouses]);
   const availableRooms = useMemo(() => {
       if (!selectedHouse) return [];
       const fromItems = items.filter(i => i.houseName === selectedHouse).map(i => i.roomName);
@@ -288,12 +288,23 @@ export default function App() {
       }
 
       if (q.roomOrder) {
-          setTempRooms(q.roomOrder);
+          const mergedRoomOrder: any = { ...q.roomOrder };
+          (q.items || []).forEach((i: any) => { 
+              if (i.houseName && i.roomName) {
+                  if (!mergedRoomOrder[i.houseName]) mergedRoomOrder[i.houseName] = [];
+                  if (!mergedRoomOrder[i.houseName].includes(i.roomName)) {
+                      mergedRoomOrder[i.houseName].push(i.roomName);
+                  }
+              }
+          });
+          setTempRooms(mergedRoomOrder);
       } else {
           const roomsMap: any = {}; 
-          q.items.forEach((i: any) => { 
-              if(!roomsMap[i.houseName]) roomsMap[i.houseName] = []; 
-              if(!roomsMap[i.houseName].includes(i.roomName)) roomsMap[i.houseName].push(i.roomName); 
+          (q.items || []).forEach((i: any) => { 
+              if (i.houseName && i.roomName) {
+                  if(!roomsMap[i.houseName]) roomsMap[i.houseName] = []; 
+                  if(!roomsMap[i.houseName].includes(i.roomName)) roomsMap[i.houseName].push(i.roomName); 
+              }
           }); 
           setTempRooms(roomsMap);
       }
@@ -343,6 +354,15 @@ export default function App() {
       } else {
           setItems([...items, newItem]);
       }
+
+      setTempRooms((prev: any) => {
+          const currentList = prev[selectedHouse] || [];
+          if (currentList.includes(selectedRoom)) return prev;
+          return {
+              ...prev,
+              [selectedHouse]: [...currentList, selectedRoom]
+          };
+      });
       
       setCurrentItem({...initialItemState});
       setActiveMobileTab('items');
@@ -490,18 +510,33 @@ export default function App() {
     setModal('edit_name');
   };
   
-  const handleMoveRoom = (roomName: string, direction: number) => {
-      setTempRooms((prev: any) => {
-          const rooms = prev[selectedHouse as string] || [];
-          const idx = rooms.indexOf(roomName);
+  const handleMoveHouse = (houseName: string, direction: number) => {
+      setTempHouses((prev: string[]) => {
+          const fromItems = items.map(i => i.houseName);
+          const currentHouses = [...new Set([...prev, ...fromItems, ...DEFAULT_HOUSES])];
+          const idx = currentHouses.indexOf(houseName);
           if (idx === -1) return prev;
-          const newRooms = [...rooms];
-          if (direction === -1 && idx > 0) {
-              [newRooms[idx], newRooms[idx-1]] = [newRooms[idx-1], newRooms[idx]];
-          } else if (direction === 1 && idx < rooms.length - 1) {
-              [newRooms[idx], newRooms[idx+1]] = [newRooms[idx+1], newRooms[idx]];
-          }
-          return { ...prev, [selectedHouse as string]: newRooms };
+          const targetIdx = idx + direction;
+          if (targetIdx < 0 || targetIdx >= currentHouses.length) return prev;
+          const newHouses = [...currentHouses];
+          [newHouses[idx], newHouses[targetIdx]] = [newHouses[targetIdx], newHouses[idx]];
+          return newHouses;
+      });
+  };
+
+  const handleMoveRoom = (roomName: string, direction: number) => {
+      if (!selectedHouse) return;
+      setTempRooms((prev: any) => {
+          const fromTemp = prev[selectedHouse] || [];
+          const fromItems = items.filter(i => i.houseName === selectedHouse).map(i => i.roomName);
+          const currentRooms = [...new Set([...fromTemp, ...fromItems, ...DEFAULT_ROOMS])];
+          const idx = currentRooms.indexOf(roomName);
+          if (idx === -1) return prev;
+          const targetIdx = idx + direction;
+          if (targetIdx < 0 || targetIdx >= currentRooms.length) return prev;
+          const newRooms = [...currentRooms];
+          [newRooms[idx], newRooms[targetIdx]] = [newRooms[targetIdx], newRooms[idx]];
+          return { ...prev, [selectedHouse]: newRooms };
       });
   };
 
@@ -533,14 +568,25 @@ export default function App() {
         const updatedItems = items.map(i => i.houseName === editTarget.oldName ? { ...i, houseName: newName } : i);
         setItems(updatedItems);
         setTempHouses(prev => prev.map(h => h === editTarget.oldName ? newName : h));
+        setTempRooms((prev: any) => {
+            const next = { ...prev };
+            if (next[editTarget.oldName]) {
+                next[newName] = next[editTarget.oldName];
+                delete next[editTarget.oldName];
+            }
+            return next;
+        });
         if (selectedHouse === editTarget.oldName) setSelectedHouse(newName);
     } else {
         const updatedItems = items.map(i => i.houseName === selectedHouse && i.roomName === editTarget.oldName ? { ...i, roomName: newName } : i);
         setItems(updatedItems);
-        setTempRooms((prev: any) => ({
-            ...prev,
-            [selectedHouse as string]: prev[selectedHouse as string].map((r: any) => r === editTarget.oldName ? newName : r)
-        }));
+        setTempRooms((prev: any) => {
+            const currentList = prev[selectedHouse as string] || [];
+            return {
+                ...prev,
+                [selectedHouse as string]: currentList.map((r: any) => r === editTarget.oldName ? newName : r)
+            };
+        });
         if (selectedRoom === editTarget.oldName) setSelectedRoom(newName);
     }
     setModal(null);
@@ -978,8 +1024,12 @@ export default function App() {
   useEffect(() => { 
     const savedStaff = localStorage.getItem('currentStaff');
     if (savedStaff) { 
-        setStaff(JSON.parse(savedStaff)); 
-        setAppState('dashboard'); 
+        try {
+            setStaff(JSON.parse(savedStaff)); 
+            setAppState('dashboard'); 
+        } catch {
+            localStorage.removeItem('currentStaff');
+        }
     }
 
     const initAuthAndSync = async () => {
@@ -1732,89 +1782,122 @@ export default function App() {
                     </tr>
                 </thead>
                 <tbody>
-                      {Object.entries(activeItems.reduce((acc, i) => { (acc[i.houseName] = acc[i.houseName] || []).push(i); return acc; }, {})).map(([house, houseItems]: any) => {
-                          const roomsInHouse = houseItems.reduce((r: any, i: any) => { (r[i.roomName] = r[i.roomName] || []).push(i); return r; }, {});
-                          const isHouseVisibleInPrint = houseItems.some((i: any) => !excludedItemIds.includes(i.id));
+                      {(() => {
+                          const houseGroups: { [houseName: string]: any[] } = {};
+                          activeItems.forEach(i => {
+                              if (!houseGroups[i.houseName]) houseGroups[i.houseName] = [];
+                              houseGroups[i.houseName].push(i);
+                          });
 
-                          return (
-                              <React.Fragment key={house}>
-                                  <tr className={`bg-transparent border-b border-gray-250 page-break align-middle ${!isHouseVisibleInPrint ? 'print:hidden' : ''}`}>
-                                      <td colSpan={6} className="font-bold text-base pt-5 pb-2 text-gray-800 px-2 font-sans align-middle">{house}</td>
-                                  </tr>
-                                  {Object.entries(roomsInHouse).map(([roomName, roomItems]: any) => {
-                                      const roomIncludedItems = roomItems.filter((i: any) => !excludedItemIds.includes(i.id));
-                                      const roomTotal = roomIncludedItems.reduce((sum: number, item: any) => sum + (item.calculated?.grandTotal || 0), 0);
-                                      const isRoomAllChecked = roomItems.every((i: any) => !excludedItemIds.includes(i.id));
-                                      const isRoomVisibleInPrint = roomIncludedItems.length > 0;
+                          const configuredHouses: string[] = tempHouses || [];
+                          const sortedHouseEntries = Object.entries(houseGroups).sort(([houseA], [houseB]) => {
+                              const idxA = configuredHouses.indexOf(houseA);
+                              const idxB = configuredHouses.indexOf(houseB);
+                              if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+                              if (idxA !== -1) return -1;
+                              if (idxB !== -1) return 1;
+                              return 0;
+                          });
 
-                                      return (
-                                          <React.Fragment key={roomName}>
-                                              <tr className={`bg-transparent border-b border-gray-150 page-break align-middle ${!isRoomVisibleInPrint ? 'print:hidden opacity-50' : ''}`}>
-                                                  <td className="text-center no-print align-middle">
-                                                      <input 
-                                                          type="checkbox" 
-                                                          checked={isRoomAllChecked} 
-                                                          onChange={() => toggleRoomSelection(roomItems, isRoomAllChecked)} 
-                                                          className="cursor-pointer w-4 h-4 text-theme-main"
-                                                      />
-                                                  </td>
-                                                  <td colSpan={5} className="font-bold text-gray-750 py-3 px-2 border-b border-gray-100 font-sans align-middle text-sm">{roomName}</td>
-                                              </tr>
-                                              {roomItems.map((item: any, idx: number) => {
-                                                  const isExcluded = excludedItemIds.includes(item.id);
-                                                  const isOther = item.curtainType === 'อื่นๆ';
-                                                  let details = [], typeText = '', displayPrice = 0;
-                                                  if (isOther) {
-                                                      const exp = OTHER_EXPENSES.find(e => e.id === item.otherExpenseType);
-                                                      typeText = exp ? exp.label : 'อื่นๆ';
-                                                      if (item.customNote) details.push(item.customNote);
-                                                      displayPrice = item.calculated?.grandTotal || 0;
-                                                  } else {
-                                                      const fabric = db.fabrics.find((f: any) => f.id === item.fabricId) || db.blinds.find((b: any) => b.id === item.fabricId) || db.venetians.find((b: any) => b.id === item.fabricId);
-                                                      const rail = db.rails.find((r: any) => r.id === item.railAccessoryId);
-                                                      const accs = item.extraAccessories.map((ea: any) => { const a = db.accs.find((dbA: any) => dbA.id === ea.id); return a ? `${a.name} (${ea.qty} ${a.unit || 'ชิ้น'})` : ''; }).filter(Boolean).join(', ');
-                                                      typeText = `${formulas.find(s=>s.id===item.curtainStyle)?.label} (${item.curtainType})`;
-                                                      if (fabric) details.push(`ผ้า: ${fabric.name} ${item.color ? `(สี ${item.color})` : ''}`);
-                                                      if (rail) details.push(`ราง: ${rail.name} (${item.calculated?.railQty} ${rail.unit})`);
-                                                      if (accs) details.push(`อุปกรณ์เสริม: ${accs}`);
-                                                      displayPrice = item.calculated?.grandTotal || 0;
-                                                  }
+                          return sortedHouseEntries.map(([house, houseItems]: [string, any[]]) => {
+                              const roomsInHouse: { [roomName: string]: any[] } = {};
+                              houseItems.forEach(i => {
+                                  if (!roomsInHouse[i.roomName]) roomsInHouse[i.roomName] = [];
+                                  roomsInHouse[i.roomName].push(i);
+                              });
 
-                                                  return (
-                                                      <tr key={item.id} className={`border-b border-gray-150 align-middle ${isExcluded ? 'print:hidden opacity-40 bg-gray-50' : 'bg-transparent hover:bg-slate-50'}`}>
-                                                          <td className="text-center no-print align-middle select-none">
-                                                              <input 
-                                                                  type="checkbox" 
-                                                                  checked={!isExcluded} 
-                                                                  onChange={() => toggleItemSelection(item.id)} 
-                                                                  className="cursor-pointer w-4 h-4 text-theme-main rounded focus:ring-blue-500" 
-                                                              />
-                                                          </td>
-                                                          <td className="py-3 px-4 font-sans font-medium text-gray-800 align-middle">
-                                                              <div className="font-bold">{typeText}</div>
-                                                          </td>
-                                                          <td className="py-3 px-4 font-sans text-xs text-gray-500 align-middle leading-relaxed">
-                                                              {details.map((detail, dIdx) => (
-                                                                  <div key={dIdx} className="font-sans text-gray-600">{detail}</div>
-                                                              ))}
-                                                          </td>
-                                                          <td className="py-3 px-4 text-center font-sans text-gray-700 align-middle whitespace-nowrap">
-                                                              {isOther ? '-' : `${item.railWidth} x ${item.railHeight} ซม.`}
-                                                          </td>
-                                                          <td className="py-3 px-4 text-right font-sans font-bold text-gray-900 align-middle">
-                                                              {Math.ceil(displayPrice).toLocaleString()}
-                                                          </td>
-                                                          <td className="no-print align-middle text-center">
-                                                          </td>
-                                                      </tr>
-                                                  );
-                                              })}
-                                          </React.Fragment>
-                                      );
-                                  })}
-                              </React.Fragment>
-                          );
-                      })}
+                              const configuredRooms: string[] = tempRooms[house] || [];
+                              const sortedRoomEntries = Object.entries(roomsInHouse).sort(([roomA], [roomB]) => {
+                                  const idxA = configuredRooms.indexOf(roomA);
+                                  const idxB = configuredRooms.indexOf(roomB);
+                                  if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+                                  if (idxA !== -1) return -1;
+                                  if (idxB !== -1) return 1;
+                                  return 0;
+                              });
+
+                              const isHouseVisibleInPrint = houseItems.some((i: any) => !excludedItemIds.includes(i.id));
+
+                              return (
+                                  <React.Fragment key={house}>
+                                      <tr className={`bg-transparent border-b border-gray-250 page-break align-middle ${!isHouseVisibleInPrint ? 'print:hidden' : ''}`}>
+                                          <td colSpan={6} className="font-bold text-base pt-5 pb-2 text-gray-800 px-2 font-sans align-middle">{house}</td>
+                                      </tr>
+                                      {sortedRoomEntries.map(([roomName, roomItems]: [string, any[]]) => {
+                                          const roomIncludedItems = roomItems.filter((i: any) => !excludedItemIds.includes(i.id));
+                                          const roomTotal = roomIncludedItems.reduce((sum: number, item: any) => sum + (item.calculated?.grandTotal || 0), 0);
+                                          const isRoomAllChecked = roomItems.every((i: any) => !excludedItemIds.includes(i.id));
+                                          const isRoomVisibleInPrint = roomIncludedItems.length > 0;
+
+                                          return (
+                                              <React.Fragment key={roomName}>
+                                                  <tr className={`bg-transparent border-b border-gray-150 page-break align-middle ${!isRoomVisibleInPrint ? 'print:hidden opacity-50' : ''}`}>
+                                                      <td className="text-center no-print align-middle">
+                                                          <input 
+                                                              type="checkbox" 
+                                                              checked={isRoomAllChecked} 
+                                                              onChange={() => toggleRoomSelection(roomItems, isRoomAllChecked)} 
+                                                              className="cursor-pointer w-4 h-4 text-theme-main"
+                                                          />
+                                                      </td>
+                                                      <td colSpan={5} className="font-bold text-gray-750 py-3 px-2 border-b border-gray-100 font-sans align-middle text-sm">{roomName}</td>
+                                                  </tr>
+                                                  {roomItems.map((item: any, idx: number) => {
+                                                      const isExcluded = excludedItemIds.includes(item.id);
+                                                      const isOther = item.curtainType === 'อื่นๆ';
+                                                      let details = [], typeText = '', displayPrice = 0;
+                                                      if (isOther) {
+                                                          const exp = OTHER_EXPENSES.find(e => e.id === item.otherExpenseType);
+                                                          typeText = exp ? exp.label : 'อื่นๆ';
+                                                          if (item.customNote) details.push(item.customNote);
+                                                          displayPrice = item.calculated?.grandTotal || 0;
+                                                      } else {
+                                                          const fabric = db.fabrics.find((f: any) => f.id === item.fabricId) || db.blinds.find((b: any) => b.id === item.fabricId) || db.venetians.find((b: any) => b.id === item.fabricId);
+                                                          const rail = db.rails.find((r: any) => r.id === item.railAccessoryId);
+                                                          const accs = item.extraAccessories.map((ea: any) => { const a = db.accs.find((dbA: any) => dbA.id === ea.id); return a ? `${a.name} (${ea.qty} ${a.unit || 'ชิ้น'})` : ''; }).filter(Boolean).join(', ');
+                                                          typeText = `${formulas.find(s=>s.id===item.curtainStyle)?.label} (${item.curtainType})`;
+                                                          if (fabric) details.push(`ผ้า: ${fabric.name} ${item.color ? `(สี ${item.color})` : ''}`);
+                                                          if (rail) details.push(`ราง: ${rail.name} (${item.calculated?.railQty} ${rail.unit})`);
+                                                          if (accs) details.push(`อุปกรณ์เสริม: ${accs}`);
+                                                          displayPrice = item.calculated?.grandTotal || 0;
+                                                      }
+
+                                                      return (
+                                                          <tr key={item.id} className={`border-b border-gray-150 align-middle ${isExcluded ? 'print:hidden opacity-40 bg-gray-50' : 'bg-transparent hover:bg-slate-50'}`}>
+                                                              <td className="text-center no-print align-middle select-none">
+                                                                  <input 
+                                                                      type="checkbox" 
+                                                                      checked={!isExcluded} 
+                                                                      onChange={() => toggleItemSelection(item.id)} 
+                                                                      className="cursor-pointer w-4 h-4 text-theme-main rounded focus:ring-blue-500" 
+                                                                  />
+                                                              </td>
+                                                              <td className="py-3 px-4 font-sans font-medium text-gray-800 align-middle">
+                                                                  <div className="font-bold">{typeText}</div>
+                                                              </td>
+                                                              <td className="py-3 px-4 font-sans text-xs text-gray-500 align-middle leading-relaxed">
+                                                                  {details.map((detail, dIdx) => (
+                                                                      <div key={dIdx} className="font-sans text-gray-600">{detail}</div>
+                                                                  ))}
+                                                              </td>
+                                                              <td className="py-3 px-4 text-center font-sans text-gray-700 align-middle whitespace-nowrap">
+                                                                  {isOther ? '-' : `${item.railWidth} x ${item.railHeight} ซม.`}
+                                                              </td>
+                                                              <td className="py-3 px-4 text-right font-sans font-bold text-gray-900 align-middle">
+                                                                  {Math.ceil(displayPrice).toLocaleString()}
+                                                              </td>
+                                                              <td className="no-print align-middle text-center">
+                                                              </td>
+                                                          </tr>
+                                                      );
+                                                  })}
+                                              </React.Fragment>
+                                          );
+                                      })}
+                                  </React.Fragment>
+                              );
+                          });
+                      })()}
                 </tbody>
              </table>
              
@@ -1888,13 +1971,31 @@ export default function App() {
                 <Card className="flex-1 min-h-[200px]" title="1. เลือกบ้าน" icon={MapPin} action={<button onClick={handleAddHouse} className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200"><Plus size={12}/> เพิ่มบ้าน</button>}>
                     <div className="p-2 overflow-y-auto space-y-1 h-full bg-gray-50/50">
                         {availableHouses.length === 0 && <div className="text-center text-gray-400 py-10 text-xs">ยังไม่มีบ้าน กดเพิ่มบ้าน</div>}
-                        {availableHouses.map(house => (
+                        {availableHouses.map((house, hIdx) => (
                             <div key={house} className={`group w-full flex items-center justify-between px-3 py-2 rounded-lg border transition-all cursor-pointer ${selectedHouse === house ? 'bg-white border-blue-500 theme-text-action font-bold shadow-sm' : 'bg-white border-gray-200 hover:border-blue-300 text-gray-600'}`} onClick={() => { setSelectedHouse(house); setSelectedRoom(null); }}>
                                 <span className="text-sm truncate">{house}</span>
                                 <div className="flex items-center gap-1 flex-shrink-0">
-                                    <button onClick={(e) => { e.stopPropagation(); handleEditName('house', house); }} className="p-1 text-gray-300 hover:text-blue-500"><Edit size={12}/></button>
+                                    <button onClick={(e) => { e.stopPropagation(); handleEditName('house', house); }} className="p-1 text-gray-300 hover:text-blue-500" title="แก้ไขชื่อบ้าน/โครงการ"><Edit size={12}/></button>
+                                    <div className="flex flex-col">
+                                        <button 
+                                            onClick={(e) => { e.stopPropagation(); handleMoveHouse(house, -1); }} 
+                                            className="p-0.5 text-gray-400 hover:text-blue-500 disabled:opacity-20 cursor-pointer" 
+                                            disabled={hIdx === 0}
+                                            title="เลื่อนบ้านขึ้น"
+                                        >
+                                            <ArrowUp size={10}/>
+                                        </button>
+                                        <button 
+                                            onClick={(e) => { e.stopPropagation(); handleMoveHouse(house, 1); }} 
+                                            className="p-0.5 text-gray-400 hover:text-blue-500 disabled:opacity-20 cursor-pointer" 
+                                            disabled={hIdx === availableHouses.length - 1}
+                                            title="เลื่อนบ้านลง"
+                                        >
+                                            <ArrowDown size={10}/>
+                                        </button>
+                                    </div>
                                     {selectedHouse === house && <CheckSquare size={14} className="text-blue-600"/>}
-                                    <button onClick={(e)=>handleDeleteHouse(house, e)} className="p-1 text-gray-300 hover:text-red-500 rounded"><Trash2 size={12}/></button>
+                                    <button onClick={(e)=>handleDeleteHouse(house, e)} className="p-1 text-gray-300 hover:text-red-500 rounded" title="ลบบ้าน"><Trash2 size={12}/></button>
                                 </div>
                             </div>
                         ))}
@@ -1902,17 +2003,31 @@ export default function App() {
                 </Card>
                 <Card className="flex-[2]" title={selectedHouse ? `2. ห้องใน ${selectedHouse}` : '2. รายการห้อง'} icon={LayoutGrid} action={selectedHouse && <button onClick={handleAddRoom} className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded hover:bg-green-200"><Plus size={12}/> เพิ่มห้อง</button>}>
                     <div className="p-2 overflow-y-auto space-y-1 h-full bg-gray-50/50">
-                        {!selectedHouse ? <div className="text-center text-gray-400 py-10 text-xs">เลือกบ้านก่อน</div> : availableRooms.length === 0 ? <div className="text-center text-gray-400 py-10 text-xs">ยังไม่มีห้อง กดเพิ่มห้อง</div> : availableRooms.map(room => (
+                        {!selectedHouse ? <div className="text-center text-gray-400 py-10 text-xs">เลือกบ้านก่อน</div> : availableRooms.length === 0 ? <div className="text-center text-gray-400 py-10 text-xs">ยังไม่มีห้อง กดเพิ่มห้อง</div> : availableRooms.map((room, rIdx) => (
                             <div key={room} className={`group w-full flex items-center justify-between px-3 py-2 rounded-lg border transition-all cursor-pointer ${selectedRoom === room ? 'bg-green-50 border-green-500 text-green-800 font-bold shadow-sm' : 'bg-white border-gray-200 hover:border-green-300 text-gray-600'}`} onClick={() => { setSelectedRoom(room); if (window.innerWidth < 1024) setActiveMobileTab('spec'); }}>
                                 <span className="text-sm truncate">{room}</span>
                                 <div className="flex items-center gap-1 flex-shrink-0">
-                                    <button onClick={(e) => { e.stopPropagation(); handleEditName('room', room); }} className="p-1 text-gray-300 hover:text-blue-500"><Edit size={12}/></button>
+                                    <button onClick={(e) => { e.stopPropagation(); handleEditName('room', room); }} className="p-1 text-gray-300 hover:text-blue-500" title="แก้ไขชื่อห้อง"><Edit size={12}/></button>
                                     <div className="flex flex-col">
-                                        <button onClick={(e) => { e.stopPropagation(); handleMoveRoom(room, -1); }} className="p-0.5 text-gray-400 hover:text-blue-500"><ArrowUp size={10}/></button>
-                                        <button onClick={(e) => { e.stopPropagation(); handleMoveRoom(room, 1); }} className="p-0.5 text-gray-400 hover:text-blue-500"><ArrowDown size={10}/></button>
+                                        <button 
+                                            onClick={(e) => { e.stopPropagation(); handleMoveRoom(room, -1); }} 
+                                            className="p-0.5 text-gray-400 hover:text-blue-500 disabled:opacity-20 cursor-pointer" 
+                                            disabled={rIdx === 0}
+                                            title="เลื่อนห้องขึ้น"
+                                        >
+                                            <ArrowUp size={10}/>
+                                        </button>
+                                        <button 
+                                            onClick={(e) => { e.stopPropagation(); handleMoveRoom(room, 1); }} 
+                                            className="p-0.5 text-gray-400 hover:text-blue-500 disabled:opacity-20 cursor-pointer" 
+                                            disabled={rIdx === availableRooms.length - 1}
+                                            title="เลื่อนห้องลง"
+                                        >
+                                            <ArrowDown size={10}/>
+                                        </button>
                                     </div>
                                     {selectedRoom === room && <ArrowRight size={14} className="text-green-600"/>}
-                                    <button onClick={(e)=>handleDeleteRoom(room, e)} className="p-1 text-gray-300 hover:text-red-500 rounded"><Trash2 size={12}/></button>
+                                    <button onClick={(e)=>handleDeleteRoom(room, e)} className="p-1 text-gray-300 hover:text-red-500 rounded" title="ลบห้อง"><Trash2 size={12}/></button>
                                 </div>
                             </div>
                         ))}
